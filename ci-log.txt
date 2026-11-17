@@ -2,24 +2,24 @@
     Updating crates.io index
      Locking 354 packages to highest Rust 1.95 compatible versions
     Checking reaction-player v0.1.0 (/__w/ReactPlayer-Rust/ReactPlayer-Rust)
-    Finished `dev` profile [optimized + debuginfo] target(s) in 1.91s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 2.08s
 check exit: 0
 
 ===== cargo test =====
    Compiling reaction-player v0.1.0 (/__w/ReactPlayer-Rust/ReactPlayer-Rust)
-    Finished `test` profile [optimized + debuginfo] target(s) in 15.84s
+    Finished `test` profile [optimized + debuginfo] target(s) in 17.10s
      Running unittests src/lib.rs (target/debug/build/reaction-player/a7b560b0bcc6c8c0/out/reaction_player-a7b560b0bcc6c8c0)
 
 running 139 tests
 test app::tests::slot_summary_reads_like_a_layout ... ok
-test app::tests::slugs_are_file_name_safe ... ok
-test engine::audio::tests::epoch_bumps_monotonically ... ok
 test app::tests::studio_delta_uses_b_minus_a ... ok
 test engine::audio::tests::slots_start_inactive_and_unmuted ... ok
+test engine::audio::tests::epoch_bumps_monotonically ... ok
 test engine::audio::tests::status_text_is_human ... ok
+test app::tests::slugs_are_file_name_safe ... ok
 test engine::audio::tests::volume_and_mute_are_clamped ... ok
-test engine::audio_resample::tests::chunks_join_without_a_discontinuity ... ok
 test engine::audio_resample::tests::odd_input_lengths_are_ignored_safely ... ok
+test engine::audio_resample::tests::chunks_join_without_a_discontinuity ... ok
 test engine::audio_resample::tests::passthrough_is_bit_exact ... ok
 test engine::audio_resample::tests::rate_is_clamped_to_the_nudge_band ... ok
 test engine::audio_resample::tests::a_faster_rate_plays_the_same_input_in_less_time ... ok
@@ -27,9 +27,9 @@ test engine::audio_resample::tests::a_slower_rate_stretches_the_same_input ... o
 test engine::audio_resample::tests::reset_forgets_the_tail ... ok
 test engine::demo::tests::demo_session_offsets_the_reaction_by_the_flash ... ok
 test engine::demo::tests::ffmpeg_commands_carry_the_landmark ... ok
-test engine::demo::tests::missing_clips_are_not_ready ... ok
 test engine::hwaccel::tests::badges_match_the_spec ... ok
 test engine::demo::tests::paths_live_under_the_demo_directory ... ok
+test engine::demo::tests::missing_clips_are_not_ready ... ok
 test engine::hwaccel::tests::codes_round_trip ... ok
 test engine::hwaccel::tests::linux_prefers_vaapi_then_vulkan_then_vdpau ... ok
 test engine::hwaccel::tests::only_software_is_not_hardware ... ok
@@ -57,18 +57,18 @@ ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
 ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5734:(snd_config_expand) test engine::runtime::tests::offsets_move_the_union_bounds ... [error.core] okEvaluate error: No such file or directory
-
+ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
 ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
 ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
 ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
-ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] test engine::runtime::tests::runtime_starts_paused_and_empty ... error evaluating nameok
-
+ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
 ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
 ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
+test engine::runtime::tests::runtime_starts_paused_and_empty ... ok
+test engine::runtime::tests::offsets_move_the_union_bounds ... ok
 test engine::runtime::tests::seeking_clamps_into_the_union ... ok
 ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
@@ -78,25 +78,25 @@ ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
 ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
 ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
+test engine::runtime::tests::stepping_moves_the_clock_by_whole_frames ... ok
 ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
-test engine::runtime::tests::stepping_moves_the_clock_by_whole_frames ... ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] okfunction snd_func_card_inum returned error: No such file or directory
-
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
+test engine::sync_clock::tests::audio_frames_advance_the_clock_exactly ... ALSA lib conf.c:5734:(snd_config_expand) ok
+[error.core] Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
+test engine::runtime::tests::tick_reports_the_union_and_does_not_play_past_the_end ... ok
+ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
 ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
 ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
 ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
 ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
-ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
-ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating stringstest engine::runtime::tests::tick_reports_the_union_and_does_not_play_past_the_end ... 
-okALSA lib conf.c:5211:(_snd_config_evaluate) 
-[error.core] function snd_func_concat returned error: No such file or directory
-ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
-test engine::sync_clock::tests::audio_frames_advance_the_clock_exactly ... ok
 test engine::runtime::tests::unlinked_layers_keep_their_own_position ... ok
 test engine::sync_clock::tests::latency_is_subtracted_from_the_published_position ... ok
 test engine::sync_clock::tests::instant_driven_mode_advances_between_reads ... ok
@@ -104,8 +104,8 @@ test engine::sync_clock::tests::interpolation_is_bounded_when_the_device_stalls 
 test engine::sync_clock::tests::seeking_moves_the_clock_and_keeps_it_there ... ok
 test engine::track::tests::commands_are_copy_and_comparable ... ok
 test engine::track::tests::media_info_frame_duration ... ok
-test engine::sync_clock::tests::pausing_freezes_the_position ... ok
 test engine::track::tests::pixel_format_classification ... ok
+test engine::sync_clock::tests::pausing_freezes_the_position ... ok
 test engine::track::tests::shared_state_starts_empty ... ok
 test engine::video_frame::tests::bt709_matches_known_values ... ok
 test engine::track::tests::probe_rejects_a_missing_file ... ok
@@ -139,8 +139,8 @@ test gpu::renderer::tests::shader_parses_and_validates ... ok
 test model::geom::tests::snapping_to_other_layers ... ok
 test model::presets::tests::applying_a_preset_keeps_offsets_and_names ... ok
 test model::presets::tests::builtins_are_all_two_to_four_slots ... ok
-test model::presets::tests::grid_shapes ... ok
 test model::presets::tests::every_layout_covers_the_requested_count ... ok
+test model::presets::tests::grid_shapes ... ok
 test model::presets::tests::pip_puts_the_source_on_top_or_underneath ... ok
 test model::presets::tests::preset_from_session_records_paint_order ... ok
 test model::presets::tests::side_by_side_halves_the_canvas ... ok
@@ -148,12 +148,12 @@ test model::presets::tests::preset_round_trip_through_json ... ok
 test model::session::tests::bring_forward_is_a_no_op_at_the_top ... ok
 test model::session::tests::duplicate_regenerates_ids_and_keeps_the_master ... ok
 test model::session::tests::canvas_aspect_fits_the_available_area ... ok
-test model::session::tests::hit_test_skips_hidden_and_locked_layers ... ok
 test model::session::tests::lensed_audio_goes_to_the_topmost_active_layer ... ok
-test model::session::tests::offsets_move_the_layer_on_the_union_timeline ... ok
+test model::session::tests::hit_test_skips_hidden_and_locked_layers ... ok
 test model::session::tests::master_falls_back_to_the_first_layer_with_audio ... ok
-test model::session::tests::paint_order_is_ascending_and_hit_test_descending ... ok
+test model::session::tests::offsets_move_the_layer_on_the_union_timeline ... ok
 test model::session::tests::reordering_normalizes_to_a_dense_range ... ok
+test model::session::tests::paint_order_is_ascending_and_hit_test_descending ... ok
 test model::settings::tests::defaults_match_the_spec ... ok
 test model::settings::tests::hw_accel_pref_gates_hardware ... ok
 test model::settings::tests::missing_fields_get_defaults ... ok
@@ -222,7 +222,7 @@ test exit: 0
 
 ===== cargo clippy --all-targets -- -D warnings =====
     Checking reaction-player v0.1.0 (/__w/ReactPlayer-Rust/ReactPlayer-Rust)
-    Finished `dev` profile [optimized + debuginfo] target(s) in 1.22s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1.26s
 clippy exit: 0
 
 ===== clippy warning count =====
