@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use eframe::egui::{self, Rect};
+use eframe::egui::Rect;
 use eframe::egui_wgpu::{self, wgpu};
 use std::sync::Arc;
 
@@ -325,7 +325,10 @@ impl CompositorResources {
             source: wgpu::ShaderSource::Wgsl(COMPOSITE_SHADER.into()),
         });
 
-        let texture_entry = |binding: u32, format: wgpu::TextureFormat| wgpu::BindGroupLayoutEntry {
+        // The layout is format-agnostic: `TextureSampleType::Float` already
+        // accepts R8/Rg8 NV12 planes and RGBA, so no per-plane format is
+        // needed here.
+        let texture_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
@@ -356,9 +359,9 @@ impl CompositorResources {
             label: Some("reaction-player layer layout"),
             entries: &[
                 uniform_entry(0, LayerUniforms::SIZE),
-                texture_entry(1, wgpu::TextureFormat::R8Unorm),
-                texture_entry(2, wgpu::TextureFormat::R8Unorm),
-                texture_entry(3, wgpu::TextureFormat::R8Unorm),
+                texture_entry(1),
+                texture_entry(2),
+                texture_entry(3),
                 sampler_entry,
             ],
         });
@@ -366,9 +369,9 @@ impl CompositorResources {
             label: Some("reaction-player compare layout"),
             entries: &[
                 uniform_entry(0, CompareUniforms::SIZE),
-                texture_entry(1, wgpu::TextureFormat::R8Unorm),
-                texture_entry(2, wgpu::TextureFormat::R8Unorm),
-                texture_entry(3, wgpu::TextureFormat::R8Unorm),
+                texture_entry(1),
+                texture_entry(2),
+                texture_entry(3),
             ],
         });
 
@@ -775,10 +778,11 @@ fn views_of(set: &TextureSet) -> Option<[wgpu::TextureView; 3]> {
         set.planes[0].as_ref()?.view.clone(),
         set.planes[1].as_ref()?.view.clone(),
         // NV12 has no third plane; fall back to the chroma plane so the bind
-        // group is always complete (the shader never samples it).
+        // group is always complete (the shader never samples it). `or` works
+        // on the `Option` itself, so no `?` inside a closure is needed.
         set.planes[2]
             .as_ref()
-            .unwrap_or_else(|| set.planes[1].as_ref()?) 
+            .or(set.planes[1].as_ref())?
             .view
             .clone(),
     ])
@@ -787,6 +791,7 @@ fn views_of(set: &TextureSet) -> Option<[wgpu::TextureView; 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eframe::egui;
 
     #[test]
     fn uniform_sizes_match_shader_layout() {

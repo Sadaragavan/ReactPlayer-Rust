@@ -378,18 +378,19 @@ impl Handle {
             | Handle::BottomRight => {
                 let left = matches!(handle, Handle::TopLeft | Handle::BottomLeft);
                 let top = matches!(handle, Handle::TopLeft | Handle::TopRight);
-                let mut w = r.w;
-                let mut h = r.h;
-                if left {
-                    w = (r.w - dx).max(min_size);
+                // Dragging a left/top edge moves the origin as well, so the
+                // size change is applied and then the origin is pulled back
+                // below.
+                let mut w = if left {
+                    (r.w - dx).max(min_size)
                 } else {
-                    w = (r.w + dx).max(min_size);
-                }
-                if top {
-                    h = (r.h - dy).max(min_size);
+                    (r.w + dx).max(min_size)
+                };
+                let mut h = if top {
+                    (r.h - dy).max(min_size)
                 } else {
-                    h = (r.h + dy).max(min_size);
-                }
+                    (r.h + dy).max(min_size)
+                };
 
                 // Aspect ratio lock for corner drags: derive the missing
                 // dimension from the dominant axis. The canvas is assumed
@@ -416,7 +417,6 @@ impl Handle {
                 }
                 r.w = w;
                 r.h = h;
-                let _ = left;
             }
         }
         r

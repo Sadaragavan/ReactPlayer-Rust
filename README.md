@@ -209,7 +209,11 @@ API allowlist; `shader.wgsl` parses with `wgsl_reflect` and its `vs_main` /
 `fs_main` entry points and uniform layouts were checked against the Rust
 `#[repr(C)]` structs. External APIs were verified against cloned upstream
 sources at the pinned versions (egui 0.37.0, rust-ffmpeg 9.1.0,
-ffmpeg-sys-next 9.1.1, cpal 0.19.0, ringbuf 0.6.0).
+ffmpeg-sys-next 9.1.1, cpal 0.18.2, ringbuf 0.6.0).
+
+Note: an earlier pass grepped cpal's `main` branch, which carries an unreleased
+0.19 API. That version does not exist on crates.io, so the pin is 0.18 and the
+timestamp field is `playback` (output) rather than `device` (input).
 
 **Not checked.** Nothing has been compiled, linked, or run. Type inference,
 trait-object coercions, lifetimes, borrow conflicts and wgpu validation are all

@@ -383,7 +383,7 @@ impl AudioEngine {
                 "default output device uses {sample_format:?} samples; reaction-player mixes in f32"
             ));
         }
-        // cpal 0.19 made `SampleRate` a plain `u32` alias.
+        // `SampleRate` has been a plain `u32` alias since 0.16.
         let sample_rate = config.sample_rate();
         let channels = config.channels() as usize;
         let stream_config = config.config();
@@ -397,16 +397,18 @@ impl AudioEngine {
         let stream = device
             .build_output_stream(
                 stream_config,
-                // The info type is inferred: naming it would pin us to a path that
-                // has moved between cpal releases.
+                // The info type is inferred: naming it would pin us to a path
+                // that moved between cpal releases.
                 move |data: &mut [f32], info: &_| {
                     let frames = data.len() / channels;
-                    // Output latency: device timestamp (predicted DAC time)
                     let ts = info.timestamp();
-                    // Output latency: predicted DAC time minus callback time.
-                    // A device that reports no ordering yields 0, not a panic.
+                    // Output latency: the predicted DAC instant minus the
+                    // instant the callback ran. cpal calls the former
+                    // `playback` for output streams (`device` is the input
+                    // counterpart). A host that reports no ordering yields
+                    // zero rather than a panic.
                     let latency_us = duration_us(
-                        ts.device
+                        ts.playback
                             .checked_duration_since(ts.callback)
                             .unwrap_or(Duration::ZERO),
                     );
