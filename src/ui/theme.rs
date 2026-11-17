@@ -136,7 +136,6 @@ pub fn visuals() -> egui::Visuals {
     v.button_frame = true;
     v.striped = false;
     v.slider_trailing_fill = false;
-    v.clip_rect_margin = 0.0;
     v.image_loading_spinners = false;
     v.resize_corner_size = 12.0;
 

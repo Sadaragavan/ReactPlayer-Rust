@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
-use ringbuf::traits::{Consumer, Observer, Producer, Split};
+use ringbuf::traits::{Consumer, Observer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 
 use super::sync_clock::MasterClock;

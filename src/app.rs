@@ -1371,7 +1371,7 @@ impl App {
         let rect = ctx.content_rect().shrink(24.0);
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
-            egui::Id::new("drop-overlay"),
+            egui::Id::unique("drop-overlay"),
         ));
         painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(180));
         painter.rect_stroke(

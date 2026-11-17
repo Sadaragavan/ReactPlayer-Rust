@@ -1017,7 +1017,7 @@ fn layers_panel(app: &mut App, ui: &mut egui::Ui) {
                             ui.set_width(ui.available_width());
                             let id_for_drag = id.clone();
                             ui.dnd_drag_source(
-                                egui::Id::new(("layer-drag", id_for_drag.clone())),
+                                egui::Id::unique(("layer-drag", id_for_drag.clone())),
                                 id_for_drag,
                                 |ui| {
                                     ui.horizontal(|ui| {

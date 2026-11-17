@@ -578,5 +578,6 @@ mod tests {
         let back = store.load_session(&s.id).unwrap();
         assert!(back.layers[1].rect.contains(Point { x: 0.2, y: 0.3 }));
         assert!((back.layers[1].crop.uv()[0] - 0.05).abs() < 1e-6);
+        let _ = fs::remove_dir_all(root);
     }
 }

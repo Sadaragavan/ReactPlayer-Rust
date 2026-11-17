@@ -101,7 +101,7 @@ impl Toasts {
         }
         let screen = ctx.content_rect();
         let anchor = egui::pos2(screen.center().x, screen.bottom() - 84.0);
-        egui::Area::new(egui::Id::new("toasts"))
+        egui::Area::new(egui::Id::unique("toasts"))
             .order(egui::Order::Foreground)
             .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -48.0))
             .fixed_pos(anchor)

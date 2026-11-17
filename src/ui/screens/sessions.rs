@@ -232,7 +232,7 @@ fn duplicate(app: &mut App, id: &str) {
 /// Load a thumbnail once per path and keep it in egui's texture cache.
 fn thumbnail_texture(ctx: &egui::Context, path: &std::path::Path) -> Option<egui::TextureHandle> {
     let key = format!("thumb:{}", path.display());
-    if let Some(texture) = ctx.data(|data| data.get_temp::<egui::TextureHandle>(egui::Id::new(&key)))
+    if let Some(texture) = ctx.data(|data| data.get_temp::<egui::TextureHandle>(egui::Id::unique(&key)))
     {
         return Some(texture);
     }
@@ -240,7 +240,7 @@ fn thumbnail_texture(ctx: &egui::Context, path: &std::path::Path) -> Option<egui
     let size = [image.width() as usize, image.height() as usize];
     let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
     let texture = ctx.load_texture(key.clone(), color, egui::TextureOptions::LINEAR);
-    ctx.data_mut(|data| data.insert_temp(egui::Id::new(&key), texture.clone()));
+    ctx.data_mut(|data| data.insert_temp(egui::Id::unique(&key), texture.clone()));
     Some(texture)
 }
 
