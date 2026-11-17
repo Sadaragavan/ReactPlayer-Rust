@@ -1635,7 +1635,7 @@ impl eframe::App for App {
         // Ctrl/Cmd+Z is the one modified key the app claims: everything else
         // with a modifier belongs to the system.
         if ctx.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Z))
-            && !ctx.wants_keyboard_input()
+            && !ctx.egui_wants_keyboard_input()
         {
             self.undo();
         }
