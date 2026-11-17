@@ -1,352 +1,296 @@
-//! Decoded-frame representation.
+//! Decoded frames in system memory, exactly as the decoder produced them.
 //!
-//! Frames keep FFmpeg's `linesize` as their stride and are copied **once** into
-//! pooled plane buffers; rows are never repacked. The GPU upload passes the
-//! stride directly as `bytes_per_row` and copies only the true plane extent,
-//! so padding is never sampled.
+//! The playback path never converts pixels: a frame keeps FFmpeg's `linesize`
+//! as its stride (padding included) and the three planes are copied once into
+//! pooled buffers. The GPU samples the planes directly and knows their true
+//! extent, so the padding rows are never sampled.
 //!
-//! The CPU conversion here exists only for the "copy cropped frame" feature and
-//! for thumbnails -- the playback path never converts to RGBA on the CPU.
+//! Memory: a 1920x1080 NV12 frame is `1920*1080 + 1920*1080/2` = 3.11 MB, and
+//! one YUV420P frame is the same. Fifteen of those per layer is ~47 MB, so four
+//! layers of backward history is at worst ~187 MB plus the 5-frame render
+//! queues (~60 MB) - see `docs/ARCHITECTURE.md`.
 
+use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
+/// Planes in a frame: Y, U, V (the third slot is unused for NV12).
+pub const MAX_PLANES: usize = 3;
 
-use super::hwaccel::ColorRange;
-use crate::error::{AppError, AppResult};
-use crate::model::CropRect;
+/// Decoded frames kept per track for instant backward stepping.
+pub const HISTORY_FRAMES: usize = 15;
 
-/// Pixel layout of a decoded frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PixelFormat {
-    /// Planar 4:2:0 (Y, U, V).
+/// Frames in flight between the decode worker and the render thread.
+pub const QUEUE_FRAMES: usize = 6;
+
+/// The two layouts the playback path understands natively.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameFormat {
+    /// Planar 8-bit 4:2:0: three `R8Unorm` textures.
     Yuv420p,
-    /// Semi-planar 4:2:0 (Y, interleaved UV).
+    /// Semi-planar 8-bit 4:2:0: `R8Unorm` + `Rg8Unorm`.
     Nv12,
 }
 
-impl PixelFormat {
-    /// Number of planes used.
+impl FrameFormat {
     pub fn plane_count(self) -> usize {
         match self {
-            PixelFormat::Yuv420p => 3,
-            PixelFormat::Nv12 => 2,
+            Self::Yuv420p => 3,
+            Self::Nv12 => 2,
         }
     }
 
-    /// Human readable label.
-    pub fn label(self) -> &'static str {
+    /// The badge shown on a layer in the UI.
+    pub fn badge(self) -> &'static str {
         match self {
-            PixelFormat::Yuv420p => "YUV420P",
-            PixelFormat::Nv12 => "NV12",
+            Self::Yuv420p => "YUV420P",
+            Self::Nv12 => "NV12",
+        }
+    }
+
+    /// The format flag the shader switches on: 0 = YUV420P, 1 = NV12.
+    pub fn shader_flag(self) -> f32 {
+        match self {
+            Self::Yuv420p => 0.0,
+            Self::Nv12 => 1.0,
+        }
+    }
+
+    /// Chroma plane dimensions for a `width` x `height` frame.
+    pub fn chroma_dims(self, width: u32, height: u32) -> (u32, u32) {
+        (width.div_ceil(2), height.div_ceil(2))
+    }
+}
+
+/// BT.709 studio (limited) or full range. Comes from the decoder's
+/// `color_range`, so the CPU and GPU paths agree on the maths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorRange {
+    Limited,
+    Full,
+}
+
+impl ColorRange {
+    /// 0 = limited (16..235 / 16..240), 1 = full (0..255).
+    pub fn shader_flag(self) -> f32 {
+        match self {
+            Self::Limited => 0.0,
+            Self::Full => 1.0,
         }
     }
 }
 
-/// A pool of reusable `Vec<u8>` plane buffers.
-///
-/// Frames hold an `Arc<PlanePool>`; dropping a [`PlaneBuf`] returns its
-/// allocation to the pool, which is what makes steady-state playback
-/// allocation free.
-#[derive(Debug, Default)]
-pub struct PlanePool {
-    free: Mutex<Vec<Vec<u8>>>,
-    /// Total allocations made (for tests / diagnostics).
-    allocations: Mutex<usize>,
-}
-
-impl PlanePool {
-    /// Create an empty pool.
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self::default())
-    }
-
-    /// Number of buffers currently parked in the pool.
-    pub fn free_count(&self) -> usize {
-        self.free.lock().map(|g| g.len()).unwrap_or(0)
-    }
-
-    /// Total allocations ever performed by this pool.
-    pub fn allocation_count(&self) -> usize {
-        self.allocations.lock().map(|g| *g).unwrap_or(0)
-    }
-
-    fn take(&self, len: usize) -> Vec<u8> {
-        if let Ok(mut free) = self.free.lock()
-            && let Some(pos) = free.iter().position(|b| b.len() >= len)
-        {
-            let mut buf = free.swap_remove(pos);
-            buf.truncate(len);
-            return buf;
-        }
-        if let Ok(mut count) = self.allocations.lock() {
-            *count += 1;
-        }
-        vec![0u8; len]
-    }
-
-    fn give(&self, buf: Vec<u8>) {
-        if let Ok(mut free) = self.free.lock() {
-            if free.len() < 48 {
-                free.push(buf);
-            }
-        }
-    }
-}
-
-/// One plane of a decoded frame.
-#[derive(Debug, Clone)]
+/// One plane's pixels in a pooled allocation.
 pub struct PlaneBuf {
     data: Vec<u8>,
-    pool: Option<Arc<PlanePool>>,
 }
 
 impl PlaneBuf {
-    /// An empty plane (NV12 has no third plane).
-    pub fn empty() -> Self {
-        Self {
-            data: Vec::new(),
-            pool: None,
-        }
+    pub fn new(data: Vec<u8>) -> Self {
+        Self { data }
     }
 
-    /// Acquire a zeroed plane of `len` bytes from `pool`.
-    pub fn acquire(pool: &Arc<PlanePool>, len: usize) -> Self {
-        let mut data = pool.take(len);
-        data.fill(0);
-        Self {
-            data,
-            pool: Some(Arc::clone(pool)),
-        }
-    }
-
-    /// A plane that owns a fresh allocation (used by tests and captures).
-    pub fn owned(len: usize) -> Self {
-        Self {
-            data: vec![0u8; len],
-            pool: None,
-        }
-    }
-
-    /// Copy exactly `len` bytes from `src` (which may be a larger FFmpeg
-    /// plane slice) into this buffer.
-    pub fn copy_from(&mut self, src: &[u8], len: usize) {
-        if self.data.len() != len {
-            self.data.resize(len, 0);
-        }
-        let n = len.min(src.len()).min(self.data.len());
-        self.data[..n].copy_from_slice(&src[..n]);
-    }
-
-    /// View the plane.
     pub fn as_slice(&self) -> &[u8] {
         &self.data
     }
 
-    /// Mutable view of the plane.
+    /// Mutable view, used by the decoder when it copies a plane in.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         &mut self.data
     }
 
-    /// Length in bytes.
-    pub fn len(&self) -> usize {
-        self.data.len()
+    pub fn capacity(&self) -> usize {
+        self.data.capacity()
     }
 
-    /// True when the plane holds no data.
-    pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+    pub fn into_inner(self) -> Vec<u8> {
+        self.data
     }
+}
 
-    /// Reinterpret as `f32` is not meaningful; exposed for tests only.
-    #[cfg(test)]
-    fn bytes(&self) -> &[u8] {
+impl Deref for PlaneBuf {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
         &self.data
     }
 }
 
-impl Drop for PlaneBuf {
-    fn drop(&mut self) {
-        if let Some(pool) = self.pool.take() {
-            pool.give(std::mem::take(&mut self.data));
-        }
-    }
-}
-
-/// A single decoded video frame in system memory.
-#[derive(Debug, Clone)]
+/// A decoded frame. Cheap to share: wrap it in an [`Arc`]; wrapping is how the
+/// decode worker hands frames to the render thread without copying.
 pub struct VideoFrame {
-    /// Pixel layout.
-    pub format: PixelFormat,
-    /// Luma width in pixels.
+    pub format: FrameFormat,
     pub width: u32,
-    /// Luma height in pixels.
     pub height: u32,
-    /// Planes; unused entries are empty.
-    pub planes: [PlaneBuf; 3],
-    /// Row stride (FFmpeg `linesize`) per plane, in bytes.
-    pub strides: [usize; 3],
-    /// Presentation timestamp in microseconds (stream time base, 0 at start).
+    pub planes: [PlaneBuf; MAX_PLANES],
+    /// True pixel extent of each plane, padding excluded.
+    pub plane_sizes: [(u32, u32); MAX_PLANES],
+    /// FFmpeg's `linesize`, kept as-is.
+    pub strides: [usize; MAX_PLANES],
+    /// Presentation timestamp in microseconds on the source's own timeline.
     pub pts_us: i64,
+    pub range: ColorRange,
+    /// Set when this frame had to go through swscale (10-bit, 4:2:2, ...).
+    pub converted: bool,
 }
 
 impl VideoFrame {
-    /// Total heap bytes held by this frame.
-    pub fn byte_size(&self) -> usize {
-        self.planes.iter().map(|p| p.len()).sum()
-    }
-
-    /// Chroma width (rounded up).
-    pub fn chroma_width(&self) -> u32 {
-        self.width.div_ceil(2)
-    }
-
-    /// Chroma height (rounded up).
-    pub fn chroma_height(&self) -> u32 {
-        self.height.div_ceil(2)
-    }
-
-    /// Size of a plane in bytes: stride * plane height.
-    pub fn plane_byte_len(&self, plane: usize) -> usize {
-        match (self.format, plane) {
-            (_, 0) => self.strides[0].max(self.width as usize) * self.height as usize,
-            (PixelFormat::Yuv420p, 1) | (PixelFormat::Yuv420p, 2) => {
-                self.strides[plane].max(self.chroma_width() as usize) * self.chroma_height() as usize
-            }
-            (PixelFormat::Nv12, 1) => {
-                self.strides[1].max(self.chroma_width() as usize * 2) * self.chroma_height() as usize
-            }
-            _ => 0,
+    /// Build a frame from planes that already have their final layout. The
+    /// caller is responsible for `planes[i].len() >= strides[i] * rows[i]`.
+    pub fn from_planes(
+        format: FrameFormat,
+        width: u32,
+        height: u32,
+        planes: [PlaneBuf; MAX_PLANES],
+        strides: [usize; MAX_PLANES],
+        pts_us: i64,
+        range: ColorRange,
+    ) -> Self {
+        let chroma = format.chroma_dims(width, height);
+        let plane_sizes = match format {
+            FrameFormat::Yuv420p => [(width, height), chroma, chroma],
+            FrameFormat::Nv12 => [(width, height), chroma, (0, 0)],
+        };
+        Self {
+            format,
+            width,
+            height,
+            planes,
+            plane_sizes,
+            strides,
+            pts_us,
+            range,
+            converted: false,
         }
     }
 
-    /// Pixel extent `(width, height)` of each plane, in the layouts the GPU
-    /// path uploads. Unused planes report `(0, 0)`.
-    pub fn plane_extents(&self) -> [(u32, u32); 3] {
-        let cw = self.chroma_width();
-        let ch = self.chroma_height();
-        match self.format {
-            PixelFormat::Yuv420p => [
-                (self.width, self.height),
-                (cw, ch),
-                (cw, ch),
-            ],
-            PixelFormat::Nv12 => [
-                (self.width, self.height),
-                // NV12 chroma is one Rg8 texel per 2x2 luma block.
-                (cw, ch),
-                (0, 0),
-            ],
-        }
+    /// Rows of real pixels in plane `i` (0 for planes that do not exist).
+    pub fn rows(&self, i: usize) -> usize {
+        self.plane_sizes[i].1 as usize
     }
 
-    /// `(stride, byte length)` of one plane as uploaded to the GPU.
-    ///
-    /// The stride is FFmpeg's `linesize`, which is what `Queue::write_texture`
-    /// takes as `bytes_per_row`; padding bytes past the visible width are
-    /// uploaded but never sampled.
-    pub fn plane_layout(&self, plane: usize) -> (usize, usize) {
-        let extents = self.plane_extents();
-        let (w, h) = extents.get(plane).copied().unwrap_or((0, 0));
-        if w == 0 || h == 0 {
-            return (0, 0);
-        }
-        let tight = w as usize;
-        let stride = self.strides[plane].max(tight);
-        (stride, stride * h as usize)
+    /// Bytes the decoder wrote for plane `i`, stride included.
+    pub fn plane_bytes(&self, i: usize) -> usize {
+        self.rows(i) * self.strides[i]
     }
 
-    /// True when the frame has enough data to be displayed.
-    pub fn is_valid(&self) -> bool {
-        self.width > 0 && self.height > 0 && self.planes[0].len() >= self.plane_byte_len(0)
+    /// The plane's bytes, trimmed to `stride * rows`.
+    pub fn plane(&self, i: usize) -> &[u8] {
+        let n = self.plane_bytes(i).min(self.planes[i].len());
+        &self.planes[i][..n]
     }
 
-    /// Read a luma sample with stride handling.
-    fn luma(&self, x: u32, y: u32) -> u8 {
-        let stride = self.strides[0].max(self.width as usize);
+    /// Total bytes of pixel payload, used for the layer's memory badge and by
+    /// the buffer pool accounting.
+    pub fn byte_len(&self) -> usize {
+        (0..self.format.plane_count())
+            .map(|i| self.plane_bytes(i))
+            .sum()
+    }
+
+    fn luma(&self, x: u32, y: u32) -> f32 {
+        let stride = self.strides[0];
         let idx = y as usize * stride + x as usize;
-        self.planes[0].as_slice().get(idx).copied().unwrap_or(0)
+        f32::from(self.planes[0].get(idx).copied().unwrap_or(16))
     }
 
-    /// Read chroma `(u, v)` for a luma pixel, handling both layouts.
-    fn chroma(&self, x: u32, y: u32) -> (u8, u8) {
-        let cx = x / 2;
-        let cy = y / 2;
+    /// Chroma at (x, y) in luma coordinates. Nearest neighbour: one sample per
+    /// 2x2 block, which is what the source actually carries.
+    fn chroma(&self, x: u32, y: u32) -> (f32, f32) {
+        let cx = (x / 2) as usize;
+        let cy = (y / 2) as usize;
         match self.format {
-            PixelFormat::Yuv420p => {
-                let stride_u = self.strides[1].max(self.chroma_width() as usize);
-                let stride_v = self.strides[2].max(self.chroma_width() as usize);
-                let iu = cy as usize * stride_u + cx as usize;
-                let iv = cy as usize * stride_v + cx as usize;
+            FrameFormat::Yuv420p => {
+                let u = cy * self.strides[1] + cx;
+                let v = cy * self.strides[2] + cx;
                 (
-                    self.planes[1].as_slice().get(iu).copied().unwrap_or(128),
-                    self.planes[2].as_slice().get(iv).copied().unwrap_or(128),
+                    f32::from(self.planes[1].get(u).copied().unwrap_or(128)),
+                    f32::from(self.planes[2].get(v).copied().unwrap_or(128)),
                 )
             }
-            PixelFormat::Nv12 => {
-                let stride = self.strides[1].max(self.chroma_width() as usize * 2);
-                let idx = cy as usize * stride + cx as usize * 2;
-                let plane = self.planes[1].as_slice();
+            FrameFormat::Nv12 => {
+                let i = cy * self.strides[1] + cx * 2;
                 (
-                    plane.get(idx).copied().unwrap_or(128),
-                    plane.get(idx + 1).copied().unwrap_or(128),
+                    f32::from(self.planes[1].get(i).copied().unwrap_or(128)),
+                    f32::from(self.planes[1].get(i + 1).copied().unwrap_or(128)),
                 )
             }
         }
     }
 
-    /// Convert the cropped window to tightly packed RGBA8 using BT.709.
-    ///
-    /// This is the CPU path used by "copy cropped frame to clipboard" and by
-    /// thumbnail generation. It matches the shader's range handling exactly.
-    pub fn crop_to_rgba(&self, crop: &CropRect, range: ColorRange) -> AppResult<RgbaImage> {
-        if !self.is_valid() {
-            return Err(AppError::new("frame has no decodable planes"));
-        }
-        let (x0, y0, w, h) = crop.to_pixel_window(self.width, self.height);
-        let mut out = vec![0u8; (w as usize) * (h as usize) * 4];
-        for row in 0..h {
-            for col in 0..w {
-                let sx = (x0 + col).min(self.width - 1);
-                let sy = (y0 + row).min(self.height - 1);
-                let yy = self.luma(sx, sy);
-                let (uu, vv) = self.chroma(sx, sy);
-                let [r, g, b] = yuv_to_rgb_709(yy, uu, vv, range);
-                let i = ((row as usize * w as usize) + col as usize) * 4;
-                out[i] = r;
-                out[i + 1] = g;
-                out[i + 2] = b;
-                out[i + 3] = 255;
+    /// One pixel in RGBA8, BT.709, honoring the frame's range flag.
+    pub fn pixel_rgba(&self, x: u32, y: u32) -> [u8; 4] {
+        let (u, v) = self.chroma(x, y);
+        let [r, g, b] = bt709_to_rgb8(self.luma(x, y), u, v, self.range);
+        [r, g, b, 255]
+    }
+
+    /// Crop-and-convert for the clipboard and thumbnails. `crop` is in pixels
+    /// of the decoded frame (already resolved from the layer's normalized
+    /// crop). The CPU path may repack rows; the playback path never does.
+    pub fn to_rgba_cropped(&self, crop: Option<CropPx>) -> RgbaBuffer {
+        let crop = crop.unwrap_or(CropPx {
+            x: 0,
+            y: 0,
+            w: self.width,
+            h: self.height,
+        });
+        let crop = crop.clamped(self.width, self.height);
+        let mut data = Vec::with_capacity(crop.w as usize * crop.h as usize * 4);
+        for y in 0..crop.h {
+            for x in 0..crop.w {
+                data.extend_from_slice(&self.pixel_rgba(crop.x + x, crop.y + y));
             }
         }
-        Ok(RgbaImage {
-            width: w,
-            height: h,
-            data: out,
-        })
+        RgbaBuffer {
+            width: crop.w,
+            height: crop.h,
+            data,
+        }
     }
 }
 
-/// A tightly packed RGBA8 image.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RgbaImage {
-    /// Width in pixels.
+impl std::fmt::Debug for VideoFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VideoFrame")
+            .field("format", &self.format)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("strides", &self.strides)
+            .field("pts_us", &self.pts_us)
+            .field("converted", &self.converted)
+            .finish()
+    }
+}
+
+/// A rectangle in pixels of the decoded frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CropPx {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl CropPx {
+    pub fn clamped(self, frame_w: u32, frame_h: u32) -> Self {
+        let x = self.x.min(frame_w.saturating_sub(1));
+        let y = self.y.min(frame_h.saturating_sub(1));
+        let w = self.w.max(1).min(frame_w - x);
+        let h = self.h.max(1).min(frame_h - y);
+        Self { x, y, w, h }
+    }
+}
+
+/// An RGBA8 buffer in row-major order with no padding.
+pub struct RgbaBuffer {
     pub width: u32,
-    /// Height in pixels.
     pub height: u32,
-    /// `width * height * 4` bytes, RGBA order.
     pub data: Vec<u8>,
 }
 
-impl RgbaImage {
-    /// Width and height as a tuple.
-    pub fn dims(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
-    /// Pixel at `(x, y)` as RGBA.
+impl RgbaBuffer {
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
-        let i = ((y as usize * self.width as usize) + x as usize) * 4;
+        let i = (y as usize * self.width as usize + x as usize) * 4;
         [
             self.data[i],
             self.data[i + 1],
@@ -354,258 +298,226 @@ impl RgbaImage {
             self.data[i + 3],
         ]
     }
-
-    /// Write to a PNG file using the `image` crate.
-    pub fn save_png(&self, path: &std::path::Path) -> AppResult<()> {
-        image::save_buffer(
-            path,
-            &self.data,
-            self.width,
-            self.height,
-            image::ColorType::Rgba8,
-        )?;
-        Ok(())
-    }
 }
 
-/// BT.709 YUV to RGB, handling limited (MPEG) and full (JPEG) range.
-///
-/// Limited range: `Y' = (Y-16)/219`, `C = (C-128)/224`.
-/// Full range:    `Y' = Y/255`,    `C = (C-128)/255`.
-pub fn yuv_to_rgb_709(y: u8, u: u8, v: u8, range: ColorRange) -> [u8; 3] {
-    let (yf, uf, vf) = match range {
+/// BT.709 YUV -> RGB on 0..255 samples. `y` is 16..235 and `u`/`v` are 16..240
+/// when the frame is studio range, matching the shader's arithmetic exactly.
+pub fn bt709_to_rgb8(y: f32, u: f32, v: f32, range: ColorRange) -> [u8; 3] {
+    let (y, u, v) = match range {
         ColorRange::Limited => (
-            (y as f32 - 16.0) / 219.0,
-            (u as f32 - 128.0) / 224.0,
-            (v as f32 - 128.0) / 224.0,
+            (y - 16.0) / 219.0,
+            (u - 128.0) / 224.0,
+            (v - 128.0) / 224.0,
         ),
-        ColorRange::Full => (
-            y as f32 / 255.0,
-            (u as f32 - 128.0) / 255.0,
-            (v as f32 - 128.0) / 255.0,
-        ),
+        ColorRange::Full => (y / 255.0, (u - 128.0) / 255.0, (v - 128.0) / 255.0),
     };
-    let r = yf + 1.5748 * vf;
-    let g = yf - 0.187_324 * uf - 0.468_124 * vf;
-    let b = yf + 1.8556 * uf;
-    [
-        (r * 255.0).round().clamp(0.0, 255.0) as u8,
-        (g * 255.0).round().clamp(0.0, 255.0) as u8,
-        (b * 255.0).round().clamp(0.0, 255.0) as u8,
-    ]
+    let r = y + 1.574_8 * v;
+    let g = y - 0.187_3 * u - 0.468_1 * v;
+    let b = y + 1.855_6 * u;
+    [to_u8(r), to_u8(g), to_u8(b)]
+}
+
+fn to_u8(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Recycles plane allocations so steady-state playback does no allocation per
+/// frame. One pool per track; the decode worker allocates from it and the
+/// render thread returns frames to it once they are no longer shown.
+pub struct BufferPool {
+    free: Mutex<Vec<Vec<u8>>>,
+    limit: usize,
+}
+
+impl BufferPool {
+    pub fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            free: Mutex::new(Vec::with_capacity(limit)),
+            limit,
+        })
+    }
+
+    /// A buffer of at least `len` bytes, reusing a pooled allocation when one
+    /// is available.
+    pub fn alloc(&self, len: usize) -> PlaneBuf {
+        let mut free = match self.free.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(mut buf) = free.pop() {
+            buf.resize(len, 0);
+            return PlaneBuf::new(buf);
+        }
+        PlaneBuf::new(vec![0u8; len])
+    }
+
+    /// Give a frame's buffers back. Callers hold frames behind `Arc`, so this
+    /// takes the [`VideoFrame`] once the `Arc` is uniquely owned.
+    pub fn recycle(&self, frame: VideoFrame) {
+        let mut free = match self.free.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if free.len() >= self.limit {
+            return;
+        }
+        for plane in frame.planes {
+            let buf = plane.into_inner();
+            if free.len() < self.limit {
+                free.push(buf);
+            }
+        }
+    }
+
+    pub fn pooled(&self) -> usize {
+        match self.free.lock() {
+            Ok(g) => g.len(),
+            Err(poisoned) => poisoned.into_inner().len(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Build a YUV420P frame with a non-trivial stride (padding on every row).
-    fn yuv_frame(width: u32, height: u32, stride_y: usize, stride_c: usize) -> VideoFrame {
-        let cw = width.div_ceil(2);
-        let ch = height.div_ceil(2);
-        let mut y = PlaneBuf::owned(stride_y * height as usize);
-        let mut u = PlaneBuf::owned(stride_c * ch as usize);
-        let mut v = PlaneBuf::owned(stride_c * ch as usize);
-        // Luma gradient: value depends on x and y, padding filled with 0xAA so a
-        // stride bug would be visible.
-        for row in 0..height as usize {
-            for col in 0..width as usize {
-                let val = ((col * 4 + row * 8) % 220) as u8;
-                y.as_mut_slice()[row * stride_y + col] = val;
-            }
-            for col in width as usize..stride_y {
-                y.as_mut_slice()[row * stride_y + col] = 0xAA;
+    /// A 4x4 luma ramp with flat chroma, written with `stride` > width.
+    fn frame(format: FrameFormat, stride: usize) -> VideoFrame {
+        let (w, h) = (8u32, 8u32);
+        let mut y = vec![0u8; stride * h as usize];
+        for row in 0..h as usize {
+            for col in 0..w as usize {
+                y[row * stride + col] = (col * 16 + row * 4) as u8;
             }
         }
-        // Chroma: left half U=90, right half U=180, top V=54, bottom V=200.
+        let (cw, ch) = format.chroma_dims(w, h);
+        let cstride = stride / 2 + 4;
+        let mut u = vec![0u8; cstride * ch as usize];
+        let mut v = vec![0u8; cstride * ch as usize];
         for row in 0..ch as usize {
             for col in 0..cw as usize {
-                let uv = if col < cw as usize / 2 { 90 } else { 180 };
-                u.as_mut_slice()[row * stride_c + col] = uv;
-                v.as_mut_slice()[row * stride_c + col] = if row < ch as usize / 2 { 54 } else { 200 };
-            }
-            for col in cw as usize..stride_c {
-                u.as_mut_slice()[row * stride_c + col] = 0x55;
-                v.as_mut_slice()[row * stride_c + col] = 0x55;
+                if format == FrameFormat::Nv12 {
+                    u[row * cstride + col * 2] = 90;
+                    u[row * cstride + col * 2 + 1] = 200;
+                } else {
+                    u[row * cstride + col] = 90;
+                    v[row * cstride + col] = 200;
+                }
             }
         }
-        VideoFrame {
-            format: PixelFormat::Yuv420p,
-            width,
-            height,
-            planes: [y, u, v],
-            strides: [stride_y, stride_c, stride_c],
-            pts_us: 0,
-        }
+        let planes = [
+            PlaneBuf::new(y),
+            PlaneBuf::new(u),
+            PlaneBuf::new(v),
+        ];
+        VideoFrame::from_planes(
+            format,
+            w,
+            h,
+            planes,
+            [stride, cstride, cstride],
+            0,
+            ColorRange::Limited,
+        )
     }
 
-    /// The same image in NV12, with interleaved chroma and padding.
-    fn nv12_from(yuv: &VideoFrame) -> VideoFrame {
-        let cw = yuv.width.div_ceil(2);
-        let ch = yuv.height.div_ceil(2);
-        let stride_uv = (cw as usize * 2) + 8;
-        let mut y = PlaneBuf::owned(yuv.strides[0] * yuv.height as usize);
-        y.copy_from(yuv.planes[0].as_slice(), yuv.strides[0] * yuv.height as usize);
-        let mut uv = PlaneBuf::owned(stride_uv * ch as usize);
-        for row in 0..ch as usize {
-            for col in 0..cw as usize {
-                let u = yuv.planes[1].as_slice()[row * yuv.strides[1] + col];
-                let v = yuv.planes[2].as_slice()[row * yuv.strides[2] + col];
-                uv.as_mut_slice()[row * stride_uv + col * 2] = u;
-                uv.as_mut_slice()[row * stride_uv + col * 2 + 1] = v;
-            }
-            for col in cw as usize * 2..stride_uv {
-                uv.as_mut_slice()[row * stride_uv + col] = 0x77;
-            }
-        }
-        VideoFrame {
-            format: PixelFormat::Nv12,
-            width: yuv.width,
-            height: yuv.height,
-            planes: [y, uv, PlaneBuf::empty()],
-            strides: [yuv.strides[0], stride_uv, 0],
-            pts_us: yuv.pts_us,
+    #[test]
+    fn strides_are_not_repacked() {
+        let f = frame(FrameFormat::Nv12, 24);
+        assert_eq!(f.strides[0], 24);
+        assert_eq!(f.plane_sizes[0], (8, 8));
+        assert_eq!(f.plane_bytes(0), 24 * 8);
+        assert_eq!(f.plane(0).len(), 24 * 8);
+        // Padding columns are inside the slice but never sampled.
+        assert_eq!(f.plane(0)[8], 0);
+    }
+
+    #[test]
+    fn nv12_and_yuv420p_agree() {
+        let a = frame(FrameFormat::Yuv420p, 16);
+        let b = frame(FrameFormat::Nv12, 16);
+        for (x, y) in [(0, 0), (3, 2), (7, 7), (5, 1)] {
+            assert_eq!(a.pixel_rgba(x, y), b.pixel_rgba(x, y), "at {x},{y}");
         }
     }
 
     #[test]
-    fn limited_range_black_and_white() {
-        assert_eq!(yuv_to_rgb_709(16, 128, 128, ColorRange::Limited), [0, 0, 0]);
-        assert_eq!(
-            yuv_to_rgb_709(235, 128, 128, ColorRange::Limited),
-            [255, 255, 255]
+    fn chroma_planes_have_ceil_half_size() {
+        assert_eq!(FrameFormat::Nv12.chroma_dims(1921, 1081), (961, 541));
+        assert_eq!(FrameFormat::Yuv420p.chroma_dims(1920, 1080), (960, 540));
+        assert_eq!(FrameFormat::Nv12.plane_count(), 2);
+        assert_eq!(FrameFormat::Yuv420p.plane_count(), 3);
+        assert_eq!(FrameFormat::Yuv420p.shader_flag(), 0.0);
+        assert_eq!(FrameFormat::Nv12.shader_flag(), 1.0);
+    }
+
+    #[test]
+    fn bt709_matches_known_values() {
+        // Studio-range white and black.
+        assert_eq!(bt709_to_rgb8(235.0, 128.0, 128.0, ColorRange::Limited), [255, 255, 255]);
+        assert_eq!(bt709_to_rgb8(16.0, 128.0, 128.0, ColorRange::Limited), [0, 0, 0]);
+        // Full-range white and black.
+        assert_eq!(bt709_to_rgb8(255.0, 128.0, 128.0, ColorRange::Full), [255, 255, 255]);
+        assert_eq!(bt709_to_rgb8(0.0, 128.0, 128.0, ColorRange::Full), [0, 0, 0]);
+        // Pure red in studio range is Y=63, U=102, V=240 for BT.709.
+        let [r, g, b] = bt709_to_rgb8(63.0, 102.0, 240.0, ColorRange::Limited);
+        assert!(r > 240, "red channel {r}");
+        assert!(g < 40, "green channel {g}");
+        assert!(b < 40, "blue channel {b}");
+    }
+
+    #[test]
+    fn crop_uses_frame_coordinates_and_respects_stride() {
+        let f = frame(FrameFormat::Yuv420p, 20);
+        let full = f.to_rgba_cropped(None);
+        assert_eq!((full.width, full.height), (8, 8));
+        assert_eq!(full.pixel(0, 0), f.pixel_rgba(0, 0));
+
+        let cropped = f.to_rgba_cropped(Some(CropPx { x: 2, y: 3, w: 3, h: 2 }));
+        assert_eq!((cropped.width, cropped.height), (3, 2));
+        assert_eq!(cropped.pixel(0, 0), f.pixel_rgba(2, 3));
+        assert_eq!(cropped.pixel(2, 1), f.pixel_rgba(4, 4));
+    }
+
+    #[test]
+    fn crop_is_clamped_inside_the_frame() {
+        let f = frame(FrameFormat::Nv12, 16);
+        let c = f.to_rgba_cropped(Some(CropPx { x: 6, y: 6, w: 40, h: 40 }));
+        assert_eq!((c.width, c.height), (2, 2));
+        let z = f.to_rgba_cropped(Some(CropPx { x: 0, y: 0, w: 0, h: 0 }));
+        assert_eq!(z.width, 1);
+    }
+
+    #[test]
+    fn pool_reuses_allocations() {
+        let pool = BufferPool::new(8);
+        let buf = pool.alloc(4096);
+        assert_eq!(buf.len(), 4096);
+        let f = VideoFrame::from_planes(
+            FrameFormat::Nv12,
+            32,
+            32,
+            [buf, pool.alloc(512), pool.alloc(0)],
+            [32, 32, 0],
+            0,
+            ColorRange::Full,
         );
+        assert!(pool.pooled() == 0);
+        let len = f.byte_len();
+        assert_eq!(len, 32 * 32 + 32 * 16);
+        pool.recycle(f);
+        assert_eq!(pool.pooled(), 3);
+        let reused = pool.alloc(1024);
+        assert_eq!(reused.len(), 1024);
+        assert!(reused.capacity() >= 1024);
     }
 
     #[test]
-    fn full_range_black_and_white() {
-        assert_eq!(yuv_to_rgb_709(0, 128, 128, ColorRange::Full), [0, 0, 0]);
-        assert_eq!(
-            yuv_to_rgb_709(255, 128, 128, ColorRange::Full),
-            [255, 255, 255]
-        );
-    }
-
-    #[test]
-    fn neutral_chroma_is_gray() {
-        let [r, g, b] = yuv_to_rgb_709(126, 128, 128, ColorRange::Limited);
-        assert_eq!(r, g);
-        assert_eq!(g, b);
-    }
-
-    #[test]
-    fn high_v_is_red_and_high_u_is_blue() {
-        let red = yuv_to_rgb_709(81, 90, 240, ColorRange::Limited);
-        assert!(red[0] > 200 && red[1] < 120 && red[2] < 120, "{red:?}");
-        let blue = yuv_to_rgb_709(41, 240, 110, ColorRange::Limited);
-        assert!(blue[2] > 200 && blue[0] < 120, "{blue:?}");
-    }
-
-    #[test]
-    fn yuv420p_crop_respects_stride_padding() {
-        let frame = yuv_frame(8, 6, 12, 6);
-        let img = frame.crop_to_rgba(&CropRect::none(), ColorRange::Limited).unwrap();
-        assert_eq!(img.dims(), (8, 6));
-        // Pixel (3, 2) corresponds to luma (3*4 + 2*8) % 220 = 28.
-        let expected = yuv_to_rgb_709(28, 90, 54, ColorRange::Limited);
-        assert_eq!(img.pixel(3, 2), [expected[0], expected[1], expected[2], 255]);
-    }
-
-    #[test]
-    fn nv12_matches_yuv420p_for_the_same_image() {
-        let yuv = yuv_frame(8, 6, 12, 6);
-        let nv12 = nv12_from(&yuv);
-        let a = yuv.crop_to_rgba(&CropRect::none(), ColorRange::Limited).unwrap();
-        let b = nv12.crop_to_rgba(&CropRect::none(), ColorRange::Limited).unwrap();
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn crop_window_maps_to_the_expected_region() {
-        let frame = yuv_frame(8, 6, 12, 6);
-        let crop = CropRect {
-            left: 0.25,
-            top: 0.0,
-            right: 0.25,
-            bottom: 0.0,
-        };
-        let img = frame.crop_to_rgba(&crop, ColorRange::Limited).unwrap();
-        assert_eq!(img.dims(), (4, 6));
-        // First column of the crop is x = 2 of the source.
-        let expected = yuv_to_rgb_709(8, 90, 54, ColorRange::Limited);
-        assert_eq!(img.pixel(0, 0), [expected[0], expected[1], expected[2], 255]);
-    }
-
-    #[test]
-    fn odd_dimensions_round_chroma_up() {
-        let frame = yuv_frame(7, 5, 8, 4);
-        assert_eq!(frame.chroma_width(), 4);
-        assert_eq!(frame.chroma_height(), 3);
-        let img = frame.crop_to_rgba(&CropRect::none(), ColorRange::Limited).unwrap();
-        assert_eq!(img.dims(), (7, 5));
-        assert_eq!(img.data.len(), 7 * 5 * 4);
-    }
-
-    #[test]
-    fn full_range_is_brighter_than_limited_for_mid_gray() {
-        let limited = yuv_to_rgb_709(126, 128, 128, ColorRange::Limited)[0];
-        let full = yuv_to_rgb_709(126, 128, 128, ColorRange::Full)[0];
-        assert!(full > limited);
-    }
-
-    #[test]
-    fn plane_pool_reuses_allocations() {
-        let pool = PlanePool::new();
-        {
-            let mut a = PlaneBuf::acquire(&pool, 1024);
-            a.as_mut_slice()[0] = 42;
-        }
-        assert_eq!(pool.free_count(), 1);
-        let b = PlaneBuf::acquire(&pool, 512);
-        assert_eq!(pool.allocation_count(), 1, "second acquire must reuse");
-        assert_eq!(b.len(), 512);
-        assert!(b.as_slice().iter().all(|v| *v == 0), "buffers are zeroed");
-    }
-
-    #[test]
-    fn plane_byte_len_matches_layout() {
-        let yuv = yuv_frame(8, 6, 12, 6);
-        assert_eq!(yuv.plane_byte_len(0), 12 * 6);
-        assert_eq!(yuv.plane_byte_len(1), 6 * 3);
-        assert_eq!(yuv.plane_byte_len(2), 6 * 3);
-        let nv12 = nv12_from(&yuv);
-        assert_eq!(nv12.plane_byte_len(1), nv12.strides[1] * 3);
-        assert_eq!(nv12.plane_byte_len(2), 0);
-    }
-
-    #[test]
-    fn invalid_frame_is_rejected() {
-        let frame = VideoFrame {
-            format: PixelFormat::Yuv420p,
-            width: 0,
-            height: 0,
-            planes: [PlaneBuf::empty(), PlaneBuf::empty(), PlaneBuf::empty()],
-            strides: [0, 0, 0],
-            pts_us: 0,
-        };
-        assert!(frame.crop_to_rgba(&CropRect::none(), ColorRange::Limited).is_err());
-    }
-
-    #[test]
-    fn rgba_png_round_trips_through_image_crate() {
-        let frame = yuv_frame(8, 6, 12, 6);
-        let img = frame.crop_to_rgba(&CropRect::none(), ColorRange::Limited).unwrap();
-        let path = std::env::temp_dir().join(format!("rp-frame-{}.png", std::process::id()));
-        img.save_png(&path).unwrap();
-        let decoded = image::open(&path).unwrap().to_rgba8();
-        assert_eq!(decoded.dimensions(), (8, 6));
-        assert_eq!(decoded.get_pixel(0, 0).0[3], 255);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn plane_bytes_are_exposed_for_tests() {
-        let p = PlaneBuf::owned(4);
-        assert_eq!(p.bytes().len(), 4);
+    fn history_budget_is_documented() {
+        // 1920x1080 4:2:0 is 1.5 bytes per pixel; 15 frames per layer.
+        let per_frame = 1920 * 1080 * 3 / 2;
+        assert_eq!(per_frame, 3_110_400);
+        assert_eq!(per_frame * HISTORY_FRAMES / 1_000_000, 46);
+        assert_eq!(per_frame * HISTORY_FRAMES * 4 / 1_000_000, 186);
     }
 }

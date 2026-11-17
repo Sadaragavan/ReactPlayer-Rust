@@ -1,251 +1,251 @@
-//! Fractional audio resampler used to absorb small clock drift.
+//! A fractional resampler over interleaved stereo `f32`, used for the
+//! +-0.5 % rate nudge that absorbs drift in the 5..100 ms band.
 //!
-//! This is a pure-Rust implementation (no `rubato`, no `swr_set_compensation`)
-//! so the behaviour is predictable and testable: a 4-tap cubic (Catmull-Rom)
-//! interpolator over interleaved stereo `f32` samples with a variable playback
-//! ratio clamped to `0.995..=1.005` by the caller.
-//!
-//! The resampler is fed *after* FFmpeg's `swresample` has already converted the
-//! decoder output to the device sample rate and channel count; it only bends
-//! that stream by a few tenths of a percent, which is inaudible.
+//! Nothing else resamples: the decoder is already asked for the output device's
+//! sample rate, so this only ever shifts the rate by half a percent. The
+//! filter is linear interpolation, which at that ratio is inaudible and costs
+//! two multiplies per sample.
 
-/// Number of taps used by the cubic interpolator.
-const TAPS: usize = 4;
+/// Smallest rate the sync engine will ever ask for.
+pub const MIN_RATE: f64 = 0.995;
+/// Largest rate the sync engine will ever ask for.
+pub const MAX_RATE: f64 = 1.005;
 
-/// Cubic fractional resampler for interleaved stereo audio.
-///
-/// The history buffer keeps the last [`TAPS`] frames so that interpolation can
-/// read `p[-1]` and `p[+2]` around the fractional position without stalling.
-#[derive(Debug, Clone)]
-pub struct DriftResampler {
-    channels: usize,
-    /// History: last frames, each `channels` samples, oldest first.
-    history: Vec<f32>,
-    /// Fractional read position within `history`, in frames.
-    pos: f32,
-    /// Current playback ratio (1.0 = unchanged).
-    ratio: f32,
+/// Channels this resampler handles (the mixer is stereo throughout).
+pub const CHANNELS: usize = 2;
+
+/// Linear-interpolating fractional resampler for interleaved stereo.
+pub struct FractionalResampler {
+    rate: f64,
+    /// Position inside the current chunk, in frames, `0.0..1.0` relative to the
+    /// frame pair `(previous, current)`.
+    phase: f64,
+    /// Last input frame of the previous chunk, so chunks join without a click.
+    previous: [f32; CHANNELS],
+    has_previous: bool,
+    /// Total frames in, frames out, for the drift report in the UI.
+    frames_in: u64,
+    frames_out: u64,
 }
 
-impl DriftResampler {
-    /// Create a resampler for `channels` interleaved channels.
-    pub fn new(channels: usize) -> Self {
-        let channels = channels.max(1);
+impl Default for FractionalResampler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FractionalResampler {
+    pub fn new() -> Self {
         Self {
-            channels,
-            history: vec![0.0; TAPS * channels],
-            pos: 1.0,
-            ratio: 1.0,
+            rate: 1.0,
+            phase: 0.0,
+            previous: [0.0; CHANNELS],
+            has_previous: false,
+            frames_in: 0,
+            frames_out: 0,
         }
     }
 
-    /// Current ratio.
-    pub fn ratio(&self) -> f32 {
-        self.ratio
-    }
-
-    /// Set the ratio, clamped to the drift-nudge range.
-    pub fn set_ratio(&mut self, ratio: f32) {
-        self.ratio = if ratio.is_finite() {
-            ratio.clamp(super::sync_clock::MIN_RATE, super::sync_clock::MAX_RATE)
+    /// Set the rate factor, clamped to the nudge band.
+    pub fn set_rate(&mut self, rate: f64) {
+        self.rate = if rate.is_finite() {
+            rate.clamp(MIN_RATE, MAX_RATE)
         } else {
             1.0
         };
     }
 
-    /// Drop all history (after a seek).
+    pub fn rate(&self) -> f64 {
+        self.rate
+    }
+
+    pub fn is_passthrough(&self) -> bool {
+        (self.rate - 1.0).abs() < f64::EPSILON
+    }
+
+    /// Forget the interpolation state. Called on every seek so the new material
+    /// does not interpolate with the old.
     pub fn reset(&mut self) {
-        for s in &mut self.history {
-            *s = 0.0;
+        self.phase = 0.0;
+        self.previous = [0.0; CHANNELS];
+        self.has_previous = false;
+    }
+
+    pub fn counters(&self) -> (u64, u64) {
+        (self.frames_in, self.frames_out)
+    }
+
+    /// Resample `input` (interleaved stereo, any length) and append the result
+    /// to `out`.
+    pub fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
+        let frames = input.len() / CHANNELS;
+        if frames == 0 {
+            return;
         }
-        self.pos = 1.0;
-        self.ratio = 1.0;
-    }
+        self.frames_in += frames as u64;
 
-    /// Number of frames currently held in the history window.
-    fn history_frames(&self) -> usize {
-        self.history.len() / self.channels
-    }
+        if self.is_passthrough() {
+            out.extend_from_slice(&input[..frames * CHANNELS]);
+            self.previous = [input[(frames - 1) * CHANNELS], input[(frames - 1) * CHANNELS + 1]];
+            self.has_previous = true;
+            self.phase = 0.0;
+            self.frames_out += frames as u64;
+            return;
+        }
 
-    /// Push one input frame into the history, dropping the oldest.
-    fn push_frame(&mut self, frame: &[f32]) {
-        let ch = self.channels;
-        self.history.drain(0..ch);
-        if frame.len() >= ch {
-            self.history.extend_from_slice(&frame[..ch]);
+        // The virtual array for this call is
+        //   v[0] = previous frame (or the first input frame if there is none)
+        //   v[k] = input[k - 1]
+        // with a length of `frames + 1`. `phase` is the read position in that
+        // array: 0 means "exactly at v[0]", 1 means "exactly at v[1]".
+        let first = if self.has_previous {
+            self.previous
         } else {
-            self.history.extend(std::iter::repeat_n(0.0, ch));
-        }
-        self.pos -= 1.0;
-    }
-
-    /// Read the interpolated frame at the current fractional position.
-    fn sample_here(&self) -> [f32; 2] {
-        let ch = self.channels;
-        let frames = self.history_frames();
-        let i = self.pos.floor().max(0.0) as usize;
-        let t = self.pos - i as f32;
-
-        // Indices for Catmull-Rom: p0 = i-1, p1 = i, p2 = i+1, p3 = i+2
-        let idx = |offset: isize| -> usize {
-            let base = i as isize + offset;
-            base.clamp(0, frames as isize - 1) as usize
+            [input[0], input[1]]
         };
-        let i0 = idx(-1);
-        let i1 = idx(0);
-        let i2 = idx(1);
-        let i3 = idx(2);
-
-        let mut out = [0.0f32; 2];
-        for (c, slot) in out.iter_mut().enumerate().take(ch) {
-            let p0 = self.history[i0 * ch + c];
-            let p1 = self.history[i1 * ch + c];
-            let p2 = self.history[i2 * ch + c];
-            let p3 = self.history[i3 * ch + c];
-            *slot = catmull_rom(p0, p1, p2, p3, t);
-        }
-        if ch == 1 {
-            out[1] = out[0];
-        }
-        out
-    }
-
-    /// Resample `input` into `output`, returning the number of frames written.
-    ///
-    /// `output` is interleaved stereo; existing contents are overwritten.
-    /// The output buffer must be large enough: at most
-    /// `input.len() / channels` frames can be produced (the ratio is clamped to
-    /// at most 1.005, and the resampler maintains one frame of latency).
-    pub fn process(&mut self, input: &[f32], output: &mut [f32]) -> usize {
-        let ch = self.channels;
-        if ch == 0 || input.is_empty() || output.len() < 2 {
-            return 0;
-        }
-        let in_frames = input.len() / ch;
-        let out_cap = output.len() / 2;
-        let mut written = 0usize;
-
-        for f in 0..in_frames {
-            self.push_frame(&input[f * ch..(f + 1) * ch]);
-            // Emit while the fractional read position is at least one frame
-            // behind the newest input, so the cubic taps always exist.
-            while self.pos >= 1.0 && self.pos < (self.history_frames() as f32) - 1.0 {
-                if written >= out_cap {
-                    return written;
-                }
-                let s = self.sample_here();
-                output[written * 2] = s[0];
-                output[written * 2 + 1] = s[1];
-                written += 1;
-                self.pos += self.ratio;
+        let sample = |index: usize| -> [f32; CHANNELS] {
+            if index == 0 {
+                first
+            } else {
+                let base = (index - 1) * CHANNELS;
+                [input[base], input[base + 1]]
             }
+        };
+
+        let last_index = frames; // v index of the newest input frame
+        let mut position = self.phase;
+        while position + 1.0 <= last_index as f64 {
+            let left_index = position.floor() as usize;
+            let frac = (position - left_index as f64) as f32;
+            let a = sample(left_index);
+            let b = sample(left_index + 1);
+            out.push(a[0] + (b[0] - a[0]) * frac);
+            out.push(a[1] + (b[1] - a[1]) * frac);
+            position += self.rate;
+            self.frames_out += 1;
         }
-        written
+
+        // Carry the tail into the next chunk. The newest input frame becomes the
+        // next call's v[0], so shift the residual position by `last_index`.
+        self.previous = sample(last_index);
+        self.has_previous = true;
+        self.phase = (position - last_index as f64).clamp(0.0, 1.0);
     }
-
-    /// Flush the remaining interpolated samples (call on end of stream).
-    pub fn flush(&mut self, output: &mut [f32]) -> usize {
-        let out_cap = output.len() / 2;
-        let mut written = 0usize;
-        while self.pos < (self.history_frames() as f32) - 1.0 && written < out_cap {
-            let s = self.sample_here();
-            output[written * 2] = s[0];
-            output[written * 2 + 1] = s[1];
-            written += 1;
-            self.pos += self.ratio;
-        }
-        written
-    }
-}
-
-/// Catmull-Rom cubic interpolation between `p1` and `p2` at fraction `t`.
-pub fn catmull_rom(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
-    let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
-    let b = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
-    let c = -0.5 * p0 + 0.5 * p2;
-    ((a * t + b) * t + c) * t + p1
-}
-
-/// Linear interpolation, exposed for the tests and the CPU frame path.
-pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn catmull_rom_hits_knots() {
-        assert!((catmull_rom(0.2, 0.7, 0.4, 0.9, 0.0) - 0.7).abs() < 1e-6);
-        assert!((catmull_rom(0.2, 0.7, 0.4, 0.9, 1.0) - 0.4).abs() < 1e-6);
+    fn ramp(frames: usize, start: f32) -> Vec<f32> {
+        let mut v = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let x = start + i as f32;
+            v.push(x);
+            v.push(-x);
+        }
+        v
     }
 
     #[test]
-    fn resampler_at_unity_produces_about_one_to_one() {
-        let frames: Vec<f32> = (0..480).flat_map(|i| [i as f32, -(i as f32)]).collect();
-        let mut rs = DriftResampler::new(2);
-        let mut out = vec![0.0f32; frames.len() * 2];
-        let n = rs.process(&frames, &mut out);
-        assert!(n >= 470 && n <= 480, "expected ~480 frames, got {n}");
-        // The first few samples should be a smooth ramp.
-        assert!(out[4] > out[2], "ramp must be increasing");
+    fn passthrough_is_bit_exact() {
+        let mut r = FractionalResampler::new();
+        let input = ramp(64, 0.0);
+        let mut out = Vec::new();
+        r.process(&input, &mut out);
+        assert_eq!(out, input);
+        assert_eq!(r.counters(), (64, 64));
     }
 
     #[test]
-    fn ratio_above_one_produces_more_frames() {
-        let frames: Vec<f32> = (0..960).flat_map(|i| [i as f32, 0.0]).collect();
-        let mut slow = DriftResampler::new(2);
-        slow.set_ratio(0.995);
-        let mut slow_out = vec![0.0f32; 4096];
-        let n_slow = slow.process(&frames, &mut slow_out);
+    fn rate_is_clamped_to_the_nudge_band() {
+        let mut r = FractionalResampler::new();
+        r.set_rate(2.0);
+        assert_eq!(r.rate(), MAX_RATE);
+        r.set_rate(0.1);
+        assert_eq!(r.rate(), MIN_RATE);
+        r.set_rate(f64::NAN);
+        assert_eq!(r.rate(), 1.0);
+        assert!(r.is_passthrough());
+    }
 
-        let mut fast = DriftResampler::new(2);
-        fast.set_ratio(1.005);
-        let mut fast_out = vec![0.0f32; 4096];
-        let n_fast = fast.process(&frames, &mut fast_out);
+    #[test]
+    fn a_faster_rate_plays_the_same_input_in_less_time() {
+        // `rate` is a speed factor: at 1.005 the resampler walks through 1.005
+        // input frames for every output frame it emits, so the same chunk comes
+        // out shorter, which is what closes a drift where the track is behind.
+        let mut r = FractionalResampler::new();
+        r.set_rate(MAX_RATE);
+        let input = ramp(10_000, 0.0);
+        let mut out = Vec::new();
+        r.process(&input, &mut out);
+        let produced = out.len() / 2;
+        let expected = (10_000.0 / MAX_RATE) as usize;
         assert!(
-            n_fast > n_slow,
-            "1.005 ratio must consume the input faster ({n_fast} vs {n_slow})"
+            produced.abs_diff(expected) <= 2,
+            "produced {produced}, expected about {expected}"
         );
+        assert!(produced < 10_000);
+        assert_eq!(r.counters(), (10_000, produced as u64));
     }
 
     #[test]
-    fn ratio_is_clamped_to_nudge_range() {
-        let mut rs = DriftResampler::new(2);
-        rs.set_ratio(2.0);
-        assert_eq!(rs.ratio(), super::super::sync_clock::MAX_RATE);
-        rs.set_ratio(0.1);
-        assert_eq!(rs.ratio(), super::super::sync_clock::MIN_RATE);
-        rs.set_ratio(f32::NAN);
-        assert_eq!(rs.ratio(), 1.0);
+    fn a_slower_rate_stretches_the_same_input() {
+        let mut r = FractionalResampler::new();
+        r.set_rate(MIN_RATE);
+        let input = ramp(10_000, 0.0);
+        let mut out = Vec::new();
+        r.process(&input, &mut out);
+        let produced = out.len() / 2;
+        let expected = (10_000.0 / MIN_RATE) as usize;
+        assert!(
+            produced.abs_diff(expected) <= 2,
+            "produced {produced}, expected about {expected}"
+        );
+        assert!(produced > 10_000);
     }
 
     #[test]
-    fn reset_clears_history() {
-        let mut rs = DriftResampler::new(2);
-        let input = vec![1.0f32; 32];
-        let mut out = vec![0.0f32; 128];
-        let _ = rs.process(&input, &mut out);
-        rs.reset();
-        assert!(rs.history.iter().all(|s| *s == 0.0));
-        assert_eq!(rs.pos, 1.0);
+    fn chunks_join_without_a_discontinuity() {
+        let mut r = FractionalResampler::new();
+        r.set_rate(1.002);
+        let mut out = Vec::new();
+        for chunk in 0..4 {
+            r.process(&ramp(100, chunk as f32 * 100.0), &mut out);
+        }
+        // A straight ramp stays monotonic across the chunk boundaries.
+        let left: Vec<f32> = out.iter().step_by(2).copied().collect();
+        for pair in left.windows(2) {
+            assert!(
+                pair[1] > pair[0],
+                "ramp went backwards: {} -> {}",
+                pair[0],
+                pair[1]
+            );
+            assert!(pair[1] - pair[0] < 2.0);
+        }
     }
 
     #[test]
-    fn flush_drains_and_stops() {
-        let mut rs = DriftResampler::new(2);
-        let mut out = vec![0.0f32; 512];
-        let a = rs.flush(&mut out);
-        let b = rs.flush(&mut out);
-        assert!(a <= 512, "flush cannot overflow the buffer");
-        assert!(a + b <= 512);
+    fn reset_forgets_the_tail() {
+        let mut r = FractionalResampler::new();
+        r.set_rate(1.001);
+        let mut out = Vec::new();
+        r.process(&ramp(50, 0.0), &mut out);
+        r.reset();
+        out.clear();
+        // A constant DC signal must start exactly at its value after a reset.
+        let dc = vec![0.25f32; 64];
+        r.process(&dc, &mut out);
+        assert!((out[0] - 0.25).abs() < 1e-6);
     }
 
     #[test]
-    fn lerp_matches_endpoints() {
-        assert_eq!(lerp(1.0, 3.0, 0.0), 1.0);
-        assert_eq!(lerp(1.0, 3.0, 1.0), 3.0);
-        assert_eq!(lerp(1.0, 3.0, 0.5), 2.0);
+    fn odd_input_lengths_are_ignored_safely() {
+        let mut r = FractionalResampler::new();
+        r.set_rate(1.003);
+        let mut out = Vec::new();
+        r.process(&[0.1, 0.2, 0.3], &mut out); // one and a half frames
+        assert_eq!(out.len() % 2, 0);
     }
 }

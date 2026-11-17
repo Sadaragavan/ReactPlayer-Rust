@@ -1,5 +1,12 @@
-//! Playback engine: decoding, audio output, the master clock and the
-//! multi-layer runtime that ties them together.
+//! The playback engine: probing, decoding, audio, and the clock that ties the
+//! layers together.
+//!
+//! * [`track`] - one worker thread per layer: demux, decode, seek, queue.
+//! * [`hwaccel`] - hardware decode with a documented, transparent fallback.
+//! * [`audio`] - the cpal output stream and the per-track mixer.
+//! * [`sync_clock`] - the master clock the UI interpolates.
+//! * [`runtime`] - the glue that turns a session into pictures and sound.
+//! * [`demo`] - synthetic clips for trying the player out.
 
 pub mod audio;
 pub mod audio_resample;
@@ -10,18 +17,9 @@ pub mod sync_clock;
 pub mod track;
 pub mod video_frame;
 
-// The module tree mirrors the concepts, not the call sites: these
-// re-exports are the facade the rest of the crate may use, so naming a
-// path through the submodule instead is not dead code.
-#[allow(unused_imports)]
-pub use audio::{AudioEngine, AudioRing, PcmChunk};
-#[allow(unused_imports)]
-pub use hwaccel::{ColorRange, DecodeBackend};
-#[allow(unused_imports)]
-pub use runtime::{LayerState, Runtime};
-#[allow(unused_imports)]
-pub use sync_clock::{DriftAction, DriftController, MasterClock};
-#[allow(unused_imports)]
-pub use track::{MediaInfo, PresentedFrame, TrackError, TrackHandle, TrackSpawn};
-#[allow(unused_imports)]
-pub use video_frame::{PixelFormat, PlanePool, VideoFrame};
+pub use audio::{AudioEngine, AudioSlot, AudioStatus, MAX_TRACKS};
+pub use hwaccel::HwBackend;
+pub use runtime::{Runtime, Tick};
+pub use sync_clock::MasterClock;
+pub use track::{probe, Command, MediaInfo, Track, TrackConfig, TrackShared};
+pub use video_frame::{ColorRange, FrameFormat, VideoFrame};

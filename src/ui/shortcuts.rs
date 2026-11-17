@@ -1,391 +1,298 @@
-//! The single, tested keyboard-shortcut dispatcher.
+//! The keyboard, in one place.
 //!
-//! Every keyboard action in the app flows through [`Action`]: the app feeds raw
-//! keys and text events in, gets zero or more actions out, and executes them.
-//! Keeping the mapping in one pure function is what makes the cheat sheet, the
-//! tests, and the actual behaviour impossible to drift apart.
+//! `action_for` is a pure mapping from a key and its modifiers to an
+//! [`Action`]; the app decides what an action means given what is on screen.
+//! Keeping the mapping pure is what makes it testable without a window.
 
-use eframe::egui::Key;
+use eframe::egui::{Event, Key, Modifiers};
 
-/// A keyboard-modifier state, decoupled from egui so tests are trivial.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Mods {
-    /// Shift held.
-    pub shift: bool,
-    /// Control held.
-    pub ctrl: bool,
-    /// Alt held.
-    pub alt: bool,
-    /// Command (macOS) / control (elsewhere).
-    pub command: bool,
-}
-
-impl Mods {
-    /// No modifiers.
-    pub const NONE: Mods = Mods {
-        shift: false,
-        ctrl: false,
-        alt: false,
-        command: false,
-    };
-    /// Shift only.
-    pub const SHIFT: Mods = Mods {
-        shift: true,
-        ..Mods::NONE
-    };
-
-    /// True when any modifier that changes shortcut meaning is down.
-    pub fn any(&self) -> bool {
-        self.shift || self.ctrl || self.alt || self.command
-    }
-}
-
-/// What a keyboard event means to the application.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a key press asks for, before the app decides how to carry it out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// Play / pause all layers.
+    /// Space: play or pause.
     TogglePlay,
-    /// Link / unlink the transports.
+    /// `L`: link or unlink the timelines.
     ToggleLink,
-    /// Toggle theater mode.
+    /// `T`: theater mode.
     ToggleTheater,
-    /// Toggle fullscreen.
+    /// `F`: fullscreen.
     ToggleFullscreen,
-    /// Toggle the layers panel.
-    ToggleLayersPanel,
-    /// Step the timeline by a signed number of microseconds.
-    StepMicros(i64),
-    /// Step a single frame from the master layer; `forward = false` steps back.
-    StepFrame {
-        /// Forward when true.
-        forward: bool,
-    },
-    /// Nudge the selected layer's offset by a signed number of microseconds.
-    NudgeOffset(i64),
-    /// Bring the selected layer forward in z.
-    BringForward,
-    /// Send the selected layer backward in z.
-    SendBackward,
-    /// Bring the selected layer to the front.
-    BringToFront,
-    /// Send the selected layer to the back.
-    SendToBack,
-    /// Move the wipe divider by a signed percentage.
-    NudgeWipe(i32),
-    /// Capture a frame in the Alignment Studio.
+    /// `]`: one layer up.
+    LayerUp,
+    /// `[`: one layer down.
+    LayerDown,
+    /// Shift+`]`: bring to front.
+    LayerFront,
+    /// Shift+`[`: send to back.
+    LayerBack,
+    /// Left/right arrow: a frame when paused, a seek step while playing, one
+    /// percent of the wipe while comparing.
+    Back,
+    Forward,
+    /// Shift plus an arrow: the whole seek step when paused, ten percent of the
+    /// wipe while comparing, a tenth of the timeline while playing.
+    BackBig,
+    ForwardBig,
+    /// `,` and `.`: step whole frames.
+    StepBack,
+    StepForward,
+    /// `C`: capture, in the studio or on the canvas.
     Capture,
-    /// Toggle mute on the designated master-audio layer.
-    ToggleMasterMute,
-    /// Cycle the Alignment Studio's compare mode.
-    CycleCompareMode,
-    /// Escape: dismiss/close the topmost thing (handled by the app cascade).
+    /// `M`: mute the master audio layer.
+    MuteMaster,
+    /// `P`: show or hide the layers panel.
+    ToggleLayers,
+    /// Escape: back out of one thing at a time.
     Escape,
-    /// Show the cheat sheet.
-    ToggleCheatSheet,
+    /// `?`: the cheat sheet.
+    Help,
 }
 
-/// How the timeline is currently behaving, which changes what Left/Right mean.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransportState {
-    /// Playing: arrows seek by the configured step.
-    Playing,
-    /// Paused: arrows step one frame.
-    Paused,
-}
-
-/// Framing of the immediate keyboard state.
-#[derive(Debug, Clone, Copy)]
-pub struct KeyPress {
-    /// The logical key.
-    pub key: Key,
-    /// Modifiers at the time of the press.
-    pub mods: Mods,
-    /// True when this is an auto-repeat (held down).
-    pub repeat: bool,
-}
-
-/// Which layer the offset steppers act on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OffsetNudgeSpan {
-    /// 1 ms.
-    Fine,
-    /// 10 ms.
-    Medium,
-    /// 100 ms.
-    Coarse,
-}
-
-impl OffsetNudgeSpan {
-    /// The span in microseconds.
-    pub fn micros(self) -> i64 {
+impl Action {
+    /// The keys this action answers to, for the cheat sheet.
+    pub fn keys(self) -> &'static str {
         match self {
-            OffsetNudgeSpan::Fine => 1_000,
-            OffsetNudgeSpan::Medium => 10_000,
-            OffsetNudgeSpan::Coarse => 100_000,
+            Self::TogglePlay => "Space",
+            Self::ToggleLink => "L",
+            Self::ToggleTheater => "T",
+            Self::ToggleFullscreen => "F",
+            Self::LayerUp => "]",
+            Self::LayerDown => "[",
+            Self::LayerFront => "Shift+]",
+            Self::LayerBack => "Shift+[",
+            Self::Back | Self::Forward => "Left / Right",
+            Self::BackBig | Self::ForwardBig => "Shift+Left / Shift+Right",
+            Self::StepBack => ",",
+            Self::StepForward => ".",
+            Self::Capture => "C",
+            Self::MuteMaster => "M",
+            Self::ToggleLayers => "P",
+            Self::Escape => "Esc",
+            Self::Help => "?",
         }
     }
 
-    /// The span used when the stepper is clicked without a modifier.
-    pub const DEFAULT: OffsetNudgeSpan = OffsetNudgeSpan::Fine;
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::TogglePlay => "Play or pause. In the studio, run both captures.",
+            Self::ToggleLink => "Link or unlink the track timelines.",
+            Self::ToggleTheater => "Theater mode: canvas only.",
+            Self::ToggleFullscreen => "Full screen.",
+            Self::LayerUp => "Move the selected layer up one step.",
+            Self::LayerDown => "Move the selected layer down one step.",
+            Self::LayerFront => "Bring the selected layer to the front.",
+            Self::LayerBack => "Send the selected layer to the back.",
+            Self::Back | Self::Forward => {
+                "One frame while paused, the seek step while playing, 1% of the wipe in the studio."
+            }
+            Self::BackBig | Self::ForwardBig => {
+                "The seek step while paused, 10% of the wipe in the studio."
+            }
+            Self::StepBack => "Step one frame back.",
+            Self::StepForward => "Step one frame forward.",
+            Self::Capture => "Capture the current frames for alignment.",
+            Self::MuteMaster => "Mute or unmute the master audio layer.",
+            Self::ToggleLayers => "Show or hide the layers panel.",
+            Self::Escape => "Close the topmost thing: menu, panel, theater, full screen.",
+            Self::Help => "This list.",
+        }
+    }
 }
 
-/// Translate one key press into an [`Action`].
-///
-/// Returns `None` for keys that mean nothing (or that must be left to the
-/// text field / IME when one is focused the caller has already checked).
-pub fn map_key(press: KeyPress, state: TransportState, seek_step_us: i64) -> Option<Action> {
-    // Alt-modified keys belong to the OS/other layers; command/ctrl combos are
-    // text-editing commands. Both are deliberately ignored here.
-    if press.mods.alt || press.mods.ctrl || press.mods.command {
+/// Every binding, in cheat-sheet order.
+pub const ALL: [Action; 19] = [
+    Action::TogglePlay,
+    Action::Back,
+    Action::Forward,
+    Action::StepBack,
+    Action::StepForward,
+    Action::BackBig,
+    Action::ForwardBig,
+    Action::ToggleLink,
+    Action::LayerUp,
+    Action::LayerDown,
+    Action::LayerFront,
+    Action::LayerBack,
+    Action::ToggleTheater,
+    Action::ToggleFullscreen,
+    Action::Capture,
+    Action::MuteMaster,
+    Action::ToggleLayers,
+    Action::Escape,
+    Action::Help,
+];
+
+/// The mapping from a key press to an action. Nothing here needs the app state,
+/// which is the point: the meaning of [`Action::Back`] is decided later.
+pub fn action_for(key: Key, modifiers: Modifiers) -> Option<Action> {
+    // Ctrl/Cmd and Alt are left to egui: they belong to text editing and menus.
+    if modifiers.command || modifiers.alt {
         return None;
     }
-    let shift = press.mods.shift;
-    match press.key {
-        Key::Space => Some(Action::TogglePlay),
-        Key::L => Some(Action::ToggleLink),
-        Key::T => Some(Action::ToggleTheater),
-        Key::F => Some(Action::ToggleFullscreen),
-        Key::M => Some(Action::ToggleMasterMute),
-        Key::C => Some(Action::Capture),
-        Key::P => Some(Action::CycleCompareMode),
-        Key::Escape => Some(Action::Escape),
-        Key::OpenBracket => Some(if shift {
-            Action::SendToBack
-        } else {
-            Action::SendBackward
-        }),
-        Key::CloseBracket => Some(if shift {
-            Action::BringToFront
-        } else {
-            Action::BringForward
-        }),
-        Key::Comma => Some(Action::NudgeOffset(-OffsetNudgeSpan::DEFAULT.micros())),
-        Key::Period => Some(Action::NudgeOffset(OffsetNudgeSpan::DEFAULT.micros())),
-        Key::ArrowLeft | Key::ArrowRight => {
-            let forward = press.key == Key::ArrowRight;
-            match state {
-                TransportState::Playing => {
-                    let step = if shift { seek_step_us * 10 } else { seek_step_us };
-                    Some(Action::StepMicros(if forward { step } else { -step }))
-                }
-                TransportState::Paused => Some(Action::StepFrame { forward }),
+    let shift = modifiers.shift;
+    Some(match key {
+        Key::Space => Action::TogglePlay,
+        Key::L => Action::ToggleLink,
+        Key::T => Action::ToggleTheater,
+        Key::F => Action::ToggleFullscreen,
+        Key::CloseBracket => {
+            if shift {
+                Action::LayerFront
+            } else {
+                Action::LayerUp
             }
         }
-        _ => None,
+        Key::OpenBracket => {
+            if shift {
+                Action::LayerBack
+            } else {
+                Action::LayerDown
+            }
+        }
+        Key::ArrowLeft => {
+            if shift {
+                Action::BackBig
+            } else {
+                Action::Back
+            }
+        }
+        Key::ArrowRight => {
+            if shift {
+                Action::ForwardBig
+            } else {
+                Action::Forward
+            }
+        }
+        Key::Comma => Action::StepBack,
+        Key::Period => Action::StepForward,
+        Key::C => Action::Capture,
+        Key::M => Action::MuteMaster,
+        Key::P => Action::ToggleLayers,
+        Key::Escape => Action::Escape,
+        _ => return None,
+    })
+}
+
+/// Keys pressed this frame, in press order. Panels and menus consume input
+/// before this is called, and the app skips it while a text field has focus.
+pub fn pressed(ctx: &eframe::egui::Context) -> Vec<Action> {
+    if ctx.egui_wants_keyboard_input() {
+        return Vec::new();
     }
+    ctx.input(|input| {
+        let mut actions = Vec::new();
+        // `?` arrives as text, not as a key, because it is Shift+/ on most
+        // layouts and egui reports the character that was typed.
+        if help_typed(&input.events) {
+            actions.push(Action::Help);
+        }
+        for event in &input.events {
+            if let Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                repeat: false,
+                ..
+            } = event
+                && let Some(action) = action_for(*key, *modifiers) {
+                    actions.push(action);
+                }
+        }
+        actions
+    })
 }
 
-/// Translate text input into an action.
-///
-/// `?` never arrives as a key on layouts where it needs Shift, so it is
-/// detected from the text event (the character itself). Text events also fire
-/// for ordinary typing, which is why the caller must only consult this when no
-/// text field has focus.
-pub fn map_text(text: &str) -> Option<Action> {
-    if text == "?" {
-        Some(Action::ToggleCheatSheet)
-    } else {
-        None
-    }
+/// True when the events contain a typed `?`.
+pub fn help_typed(events: &[Event]) -> bool {
+    events
+        .iter()
+        .any(|event| matches!(event, Event::Text(text) if text == "?"))
 }
-
-/// The wipe step used by the Alignment Studio's `[`/`]`-less nudge controls.
-pub const WIPE_STEP_PCT: i32 = 1;
-/// The wipe step with Shift held.
-pub const WIPE_STEP_PCT_LARGE: i32 = 10;
-
-/// One line of the cheat sheet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CheatSheetRow {
-    /// The key or key combination, as displayed.
-    pub keys: &'static str,
-    /// What it does.
-    pub what: &'static str,
-}
-
-/// The cheat sheet, in the order it is displayed.
-pub const CHEAT_SHEET: &[CheatSheetRow] = &[
-    CheatSheetRow { keys: "Space", what: "Play / pause" },
-    CheatSheetRow { keys: "L", what: "Link transports" },
-    CheatSheetRow { keys: "T", what: "Theater mode" },
-    CheatSheetRow { keys: "F", what: "Fullscreen" },
-    CheatSheetRow { keys: "?", what: "This sheet" },
-    CheatSheetRow { keys: "Left / Right", what: "Seek while playing, step a frame while paused (Shift = 10x)" },
-    CheatSheetRow { keys: ", / .", what: "Nudge the selected offset by 1 ms" },
-    CheatSheetRow { keys: "[ / ]", what: "Move the selected layer down / up one z step" },
-    CheatSheetRow { keys: "Shift+[ / Shift+]", what: "Send to back / bring to front" },
-    CheatSheetRow { keys: "C", what: "Capture a frame for alignment" },
-    CheatSheetRow { keys: "P", what: "Cycle Onion / Wipe" },
-    CheatSheetRow { keys: "M", what: "Mute / unmute master audio" },
-    CheatSheetRow { keys: "Esc", what: "Close the topmost window" },
-];
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn press(key: Key) -> KeyPress {
-        KeyPress {
-            key,
-            mods: Mods::NONE,
-            repeat: false,
+    fn plain() -> Modifiers {
+        Modifiers::NONE
+    }
+
+    fn shift() -> Modifiers {
+        Modifiers::SHIFT
+    }
+
+    #[test]
+    fn every_documented_binding_maps() {
+        assert_eq!(action_for(Key::Space, plain()), Some(Action::TogglePlay));
+        assert_eq!(action_for(Key::L, plain()), Some(Action::ToggleLink));
+        assert_eq!(action_for(Key::T, plain()), Some(Action::ToggleTheater));
+        assert_eq!(
+            action_for(Key::F, plain()),
+            Some(Action::ToggleFullscreen)
+        );
+        assert_eq!(action_for(Key::OpenBracket, plain()), Some(Action::LayerDown));
+        assert_eq!(action_for(Key::CloseBracket, plain()), Some(Action::LayerUp));
+        assert_eq!(
+            action_for(Key::OpenBracket, shift()),
+            Some(Action::LayerBack)
+        );
+        assert_eq!(
+            action_for(Key::CloseBracket, shift()),
+            Some(Action::LayerFront)
+        );
+        assert_eq!(action_for(Key::ArrowLeft, plain()), Some(Action::Back));
+        assert_eq!(action_for(Key::ArrowRight, plain()), Some(Action::Forward));
+        assert_eq!(action_for(Key::ArrowLeft, shift()), Some(Action::BackBig));
+        assert_eq!(
+            action_for(Key::ArrowRight, shift()),
+            Some(Action::ForwardBig)
+        );
+        assert_eq!(action_for(Key::Comma, plain()), Some(Action::StepBack));
+        assert_eq!(action_for(Key::Period, plain()), Some(Action::StepForward));
+        assert_eq!(action_for(Key::C, plain()), Some(Action::Capture));
+        assert_eq!(action_for(Key::M, plain()), Some(Action::MuteMaster));
+        assert_eq!(action_for(Key::P, plain()), Some(Action::ToggleLayers));
+        assert_eq!(action_for(Key::Escape, plain()), Some(Action::Escape));
+    }
+
+    #[test]
+    fn unbound_keys_do_nothing() {
+        assert_eq!(action_for(Key::Q, plain()), None);
+        assert_eq!(action_for(Key::Num1, plain()), None);
+        assert_eq!(action_for(Key::Enter, plain()), None);
+    }
+
+    #[test]
+    fn command_and_alt_are_left_to_egui() {
+        let command = Modifiers {
+            command: true,
+            ..Modifiers::NONE
+        };
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::NONE
+        };
+        assert_eq!(action_for(Key::Space, command), None);
+        assert_eq!(action_for(Key::C, command), None);
+        assert_eq!(action_for(Key::P, alt), None);
+    }
+
+    #[test]
+    fn question_mark_arrives_as_text() {
+        assert!(help_typed(&[Event::Text("?".to_owned())]));
+        assert!(!help_typed(&[Event::Text("x".to_owned())]));
+        assert!(!help_typed(&[]));
+    }
+
+    #[test]
+    fn every_action_has_keys_and_a_description() {
+        for action in ALL {
+            assert!(!action.keys().is_empty());
+            assert!(!action.description().is_empty());
         }
-    }
-
-    fn press_shift(key: Key) -> KeyPress {
-        KeyPress {
-            key,
-            mods: Mods::SHIFT,
-            repeat: false,
+        // The cheat sheet lists each action once.
+        for (index, action) in ALL.iter().enumerate() {
+            assert!(!ALL[..index].contains(action), "duplicate {action:?}");
         }
-    }
-
-    #[test]
-    fn space_toggles_play() {
-        assert_eq!(
-            map_key(press(Key::Space), TransportState::Paused, 5_000_000),
-            Some(Action::TogglePlay)
-        );
-    }
-
-    #[test]
-    fn letter_shortcuts_map() {
-        let cases = [
-            (Key::L, Action::ToggleLink),
-            (Key::T, Action::ToggleTheater),
-            (Key::F, Action::ToggleFullscreen),
-            (Key::M, Action::ToggleMasterMute),
-            (Key::C, Action::Capture),
-            (Key::P, Action::CycleCompareMode),
-            (Key::Escape, Action::Escape),
-        ];
-        for (key, action) in cases {
-            assert_eq!(
-                map_key(press(key), TransportState::Paused, 5_000_000),
-                Some(action),
-                "{key:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn arrows_seek_while_playing_and_step_frames_while_paused() {
-        assert_eq!(
-            map_key(press(Key::ArrowRight), TransportState::Playing, 5_000_000),
-            Some(Action::StepMicros(5_000_000))
-        );
-        assert_eq!(
-            map_key(press(Key::ArrowLeft), TransportState::Playing, 5_000_000),
-            Some(Action::StepMicros(-5_000_000))
-        );
-        assert_eq!(
-            map_key(press_shift(Key::ArrowRight), TransportState::Playing, 5_000_000),
-            Some(Action::StepMicros(50_000_000)),
-            "Shift multiplies the seek step by ten"
-        );
-        assert_eq!(
-            map_key(press(Key::ArrowRight), TransportState::Paused, 5_000_000),
-            Some(Action::StepFrame { forward: true })
-        );
-        assert_eq!(
-            map_key(press(Key::ArrowLeft), TransportState::Paused, 5_000_000),
-            Some(Action::StepFrame { forward: false })
-        );
-    }
-
-    #[test]
-    fn offset_nudges_are_one_millisecond() {
-        assert_eq!(
-            map_key(press(Key::Comma), TransportState::Paused, 5_000_000),
-            Some(Action::NudgeOffset(-1_000))
-        );
-        assert_eq!(
-            map_key(press(Key::Period), TransportState::Paused, 5_000_000),
-            Some(Action::NudgeOffset(1_000))
-        );
-        assert_eq!(
-            map_key(press_shift(Key::Period), TransportState::Paused, 5_000_000),
-            Some(Action::NudgeOffset(1_000)),
-            "Shift does not change the offset nudge in this build"
-        );
-    }
-
-    #[test]
-    fn bracket_shortcuts_reorder_z() {
-        assert_eq!(
-            map_key(press(Key::OpenBracket), TransportState::Paused, 5_000_000),
-            Some(Action::SendBackward)
-        );
-        assert_eq!(
-            map_key(press(Key::CloseBracket), TransportState::Paused, 5_000_000),
-            Some(Action::BringForward)
-        );
-        assert_eq!(
-            map_key(press_shift(Key::OpenBracket), TransportState::Paused, 5_000_000),
-            Some(Action::SendToBack)
-        );
-        assert_eq!(
-            map_key(press_shift(Key::CloseBracket), TransportState::Paused, 5_000_000),
-            Some(Action::BringToFront)
-        );
-    }
-
-    #[test]
-    fn modified_letters_are_left_alone() {
-        // Cmd/Ctrl combos must reach the text fields (copy, paste, ...).
-        let mut p = press(Key::C);
-        p.mods.command = true;
-        assert_eq!(map_key(p, TransportState::Paused, 5_000_000), None);
-        let mut p = press(Key::Space);
-        p.mods.alt = true;
-        assert_eq!(map_key(p, TransportState::Paused, 5_000_000), None);
-    }
-
-    #[test]
-    fn unassigned_keys_do_nothing() {
-        for key in [Key::A, Key::B, Key::Z, Key::Enter, Key::Tab, Key::ArrowUp] {
-            assert_eq!(map_key(press(key), TransportState::Paused, 5_000_000), None);
-        }
-    }
-
-    #[test]
-    fn question_mark_comes_from_text_events() {
-        assert_eq!(map_text("?"), Some(Action::ToggleCheatSheet));
-        assert_eq!(map_text("a"), None);
-        assert_eq!(map_text(""), None);
-    }
-
-    #[test]
-    fn every_cheat_sheet_row_is_documented_and_unique() {
-        let mut keys: Vec<&str> = CHEAT_SHEET.iter().map(|r| r.keys).collect();
-        let before = keys.len();
-        keys.sort_unstable();
-        keys.dedup();
-        assert_eq!(keys.len(), before, "duplicate cheat-sheet rows");
-        assert!(CHEAT_SHEET.iter().any(|r| r.keys == "Space"));
-        assert!(CHEAT_SHEET.iter().any(|r| r.what.contains("Play")));
-    }
-
-    #[test]
-    fn offset_spans_are_ordered() {
-        assert!(OffsetNudgeSpan::Fine.micros() < OffsetNudgeSpan::Medium.micros());
-        assert!(OffsetNudgeSpan::Medium.micros() < OffsetNudgeSpan::Coarse.micros());
-        assert_eq!(OffsetNudgeSpan::DEFAULT.micros(), 1_000);
-    }
-
-    #[test]
-    fn mods_default_has_nothing_down() {
-        assert!(!Mods::NONE.any());
-        assert!(Mods::SHIFT.any());
-    }
-
-    #[test]
-    fn repeat_key_still_maps() {
-        let mut p = press(Key::ArrowRight);
-        p.repeat = true;
-        assert_eq!(
-            map_key(p, TransportState::Playing, 5_000_000),
-            Some(Action::StepMicros(5_000_000))
-        );
     }
 }

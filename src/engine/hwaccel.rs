@@ -1,524 +1,346 @@
-//! Hardware-accelerated decoding via `ffmpeg-sys-next`.
+//! Hardware decode devices.
 //!
-//! The safe `ffmpeg-next` API does not expose `AVHWDeviceContext`s, so this
-//! module talks to the C API directly. Every `unsafe` block carries a safety
-//! comment; in edition 2024 the blocks live *inside* `unsafe fn`s so that
-//! `unsafe_op_in_unsafe_fn` stays quiet.
+//! `ffmpeg-next`'s safe API does not expose `AVCodecContext::hw_device_ctx` or
+//! the `get_format` callback, so this module talks to `ffmpeg-sys-next`
+//! directly. Everything here is `unsafe` by necessity; each block states what
+//! makes it sound.
 //!
-//! ## Flow
+//! The flow for one decoder:
+//! 1. [`HwBackend::candidates`] gives the platform's preference order.
+//! 2. For each, check `avcodec_get_hw_config` for a hardware pixel format the
+//!    codec supports through a device context.
+//! 3. `av_hwdevice_ctx_create` opens the device, and `av_buffer_ref` shares it
+//!    with the codec context.
+//! 4. A `get_format` callback picks the hardware pixel format when the decoder
+//!    offers it and the best software one when it does not.
+//! 5. Frames come back in the hardware format; [`HwDecoder::transfer`] copies
+//!    them into an NV12/YUV420P system-memory frame with
+//!    `av_hwframe_transfer_data`.
 //!
-//! 1. [`device_candidates`] lists the devices to try, in platform order.
-//! 2. [`probe_codec_hw_support`] walks `avcodec_get_hw_config()` to confirm the
-//!    decoder supports the device pixel format.
-//! 3. `av_hwdevice_ctx_create` creates the device; its refcounted handle is
-//!    attached to the `AVCodecContext` as `hw_device_ctx`.
-//! 4. A `get_format` callback is installed that picks the hardware pixel format.
-//! 5. After `avcodec_send_packet`/`avcodec_receive_frame`, a frame in hardware
-//!    memory is copied to system memory with `av_hwframe_transfer_data` into
-//!    **NV12** (or YUV420P for `VAAPI` when the driver only offers that).
-//!
-//! Any failure along the way is reported as [`HwError`] and the caller silently
-//! falls back to software decoding.
+//! Any failure returns `None` and the caller decodes in software instead.
 
-use std::ffi::{c_int, c_void};
+use std::cell::Cell;
+use std::ffi::c_int;
 use std::ptr;
 
 use ffmpeg_next::ffi;
 
-use crate::model::HardwareAccel;
+use crate::model::settings::HwAccelPref;
 
-/// Which decoder backend a track ended up using. The UI shows a badge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum DecodeBackend {
-    /// VA-API (Linux).
+/// Which decoder actually produced the frames on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HwBackend {
     Vaapi,
-    /// Vulkan video decode (Linux).
     Vulkan,
-    /// VDPAU (Linux, X11 only).
     Vdpau,
-    /// D3D11VA (Windows).
     D3d11va,
-    /// DXVA2 (Windows, legacy).
     Dxva2,
-    /// VideoToolbox (macOS).
     VideoToolbox,
-    /// CPU decoding.
-    #[default]
     Software,
 }
 
-impl DecodeBackend {
-    /// Short badge label shown in the transport bar.
+impl HwBackend {
+    /// The badge the layer shows.
     pub fn badge(self) -> &'static str {
         match self {
-            DecodeBackend::Vaapi => "VAAPI",
-            DecodeBackend::Vulkan => "VULKAN",
-            DecodeBackend::Vdpau => "VDPAU",
-            DecodeBackend::D3d11va => "D3D11VA",
-            DecodeBackend::Dxva2 => "DXVA2",
-            DecodeBackend::VideoToolbox => "VT",
-            DecodeBackend::Software => "SW",
+            Self::Vaapi => "VAAPI",
+            Self::Vulkan => "VULKAN",
+            Self::Vdpau => "VDPAU",
+            Self::D3d11va => "D3D11VA",
+            Self::Dxva2 => "DXVA2",
+            Self::VideoToolbox => "VT",
+            Self::Software => "SW",
         }
     }
 
-    /// True when frames come from a hardware device.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Vaapi => "VA-API",
+            Self::Vulkan => "Vulkan video",
+            Self::Vdpau => "VDPAU",
+            Self::D3d11va => "D3D11VA",
+            Self::Dxva2 => "DXVA2",
+            Self::VideoToolbox => "VideoToolbox",
+            Self::Software => "software",
+        }
+    }
+
     pub fn is_hardware(self) -> bool {
-        self != DecodeBackend::Software
+        !matches!(self, Self::Software)
     }
 
-    /// Relative quality ranking, used to pick the best badge when a session
-    /// mixes backends across layers. Higher is better.
-    pub fn rank(self) -> u8 {
+    /// Compact code for the atomics that publish this to the UI.
+    pub fn code(self) -> u8 {
         match self {
-            DecodeBackend::Software => 0,
-            // VDPAU and DXVA2 are the legacy paths; the rest are current.
-            DecodeBackend::Vdpau => 1,
-            DecodeBackend::Dxva2 => 1,
-            DecodeBackend::Vaapi => 2,
-            DecodeBackend::Vulkan => 3,
-            DecodeBackend::D3d11va => 3,
-            DecodeBackend::VideoToolbox => 3,
+            Self::Software => 0,
+            Self::Vaapi => 1,
+            Self::Vulkan => 2,
+            Self::Vdpau => 3,
+            Self::D3d11va => 4,
+            Self::Dxva2 => 5,
+            Self::VideoToolbox => 6,
         }
     }
-}
 
-/// Colour range of a decoded frame, used by both the shader and the CPU path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ColorRange {
-    /// Limited / MPEG range (16-235).
-    #[default]
-    Limited,
-    /// Full / JPEG range (0-255).
-    Full,
-}
+    pub fn from_code(code: u8) -> Self {
+        match code {
+            1 => Self::Vaapi,
+            2 => Self::Vulkan,
+            3 => Self::Vdpau,
+            4 => Self::D3d11va,
+            5 => Self::Dxva2,
+            6 => Self::VideoToolbox,
+            _ => Self::Software,
+        }
+    }
 
-impl ColorRange {
-    /// `1.0` selects limited range, `0.0` full range in the shader uniform.
-    pub fn shader_flag(self) -> f32 {
+    /// Devices to try, in order, on this platform.
+    pub fn candidates() -> &'static [HwBackend] {
+        #[cfg(target_os = "linux")]
+        {
+            &[Self::Vaapi, Self::Vulkan, Self::Vdpau]
+        }
+        #[cfg(target_os = "windows")]
+        {
+            &[Self::D3d11va, Self::Dxva2]
+        }
+        #[cfg(target_os = "macos")]
+        {
+            &[Self::VideoToolbox]
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+        {
+            &[]
+        }
+    }
+
+    fn device_type(self) -> ffi::AVHWDeviceType {
         match self {
-            ColorRange::Limited => 1.0,
-            ColorRange::Full => 0.0,
-        }
-    }
-
-    /// Interpret FFmpeg's range enum.
-    pub fn from_ffmpeg(range: ffmpeg_next::color::Range) -> Self {
-        match range {
-            ffmpeg_next::color::Range::JPEG => ColorRange::Full,
-            _ => ColorRange::Limited,
+            Self::Vaapi => ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+            Self::Vulkan => ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN,
+            Self::Vdpau => ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU,
+            Self::D3d11va => ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA,
+            Self::Dxva2 => ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2,
+            Self::VideoToolbox => ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+            Self::Software => ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE,
         }
     }
 }
 
-/// A hardware device type together with its pixel format and backend badge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HwCandidate {
-    /// The backend this candidate maps to.
-    pub backend: DecodeBackend,
-    /// FFmpeg device type, as the generated enum.
-    pub device_type: ffi::AVHWDeviceType,
-    /// Pixel format this device decodes to, as the generated enum.
-    pub pix_fmt: ffi::AVPixelFormat,
-    /// Name passed to `av_hwdevice_ctx_create`.
-    pub device_name: &'static str,
-    /// Config method bit to look for in `avcodec_get_hw_config`, a plain `int`
-    /// in the C header and therefore a `c_int` here.
-    pub config_method: c_int,
+thread_local! {
+    /// The pixel format the current thread's `get_format` should pick. Decoding
+    /// happens on one thread per track, so a thread-local is enough and avoids
+    /// stashing a pointer in `AVCodecContext::opaque`.
+    static DESIRED: Cell<Option<ffi::AVPixelFormat>> = const { Cell::new(None) };
 }
 
-impl HwCandidate {
-    /// Whether the decoder should be asked for a "reference" frame
-    /// (`AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX`) or can decode fully inside
-    /// the device.
-    pub fn is_device_ctx(self) -> bool {
-        self.config_method == ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as c_int
-    }
-}
-
-/// Reasons hardware decoding could not be used.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HwError {
-    /// The platform has no hardware candidates (or Software Only was chosen).
-    NoCandidates,
-    /// The decoder does not advertise support for any candidate.
-    UnsupportedCodec,
-    /// Creating the device failed. Contains the errno.
-    DeviceCreation(i32),
-    /// Attaching the device or installing `get_format` failed.
-    Setup(String),
-    /// Transferring a hardware frame to system memory failed.
-    Transfer(i32),
-    /// The caller disabled hardware decoding.
-    Disabled,
-}
-
-impl std::fmt::Display for HwError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HwError::NoCandidates => write!(f, "no hardware candidates on this platform"),
-            HwError::UnsupportedCodec => write!(f, "codec does not support hardware decode"),
-            HwError::DeviceCreation(e) => write!(f, "av_hwdevice_ctx_create failed ({e})"),
-            HwError::Setup(msg) => write!(f, "hardware setup failed: {msg}"),
-            HwError::Transfer(e) => write!(f, "av_hwframe_transfer_data failed ({e})"),
-            HwError::Disabled => write!(f, "hardware decoding disabled by the user"),
-        }
-    }
-}
-
-/// The device candidate order for the current platform.
-///
-/// * Linux: VAAPI -> Vulkan -> VDPAU
-/// * Windows: D3D11VA -> DXVA2
-/// * macOS: VideoToolbox
-/// * anything else: none
-pub fn device_candidates() -> Vec<HwCandidate> {
-    let mut out = Vec::new();
-    #[cfg(target_os = "linux")]
-    {
-        out.push(HwCandidate {
-            backend: DecodeBackend::Vaapi,
-            device_type: ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
-            pix_fmt: ffi::AVPixelFormat::AV_PIX_FMT_VAAPI,
-            device_name: "/dev/dri/renderD128",
-            config_method: ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as c_int,
-        });
-        out.push(HwCandidate {
-            backend: DecodeBackend::Vulkan,
-            device_type: ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN,
-            pix_fmt: ffi::AVPixelFormat::AV_PIX_FMT_VULKAN,
-            device_name: "",
-            config_method: ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as c_int,
-        });
-        out.push(HwCandidate {
-            backend: DecodeBackend::Vdpau,
-            device_type: ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU,
-            pix_fmt: ffi::AVPixelFormat::AV_PIX_FMT_VDPAU,
-            device_name: "",
-            config_method: ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as c_int,
-        });
-    }
-    #[cfg(target_os = "windows")]
-    {
-        out.push(HwCandidate {
-            backend: DecodeBackend::D3d11va,
-            device_type: ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA,
-            pix_fmt: ffi::AVPixelFormat::AV_PIX_FMT_D3D11,
-            device_name: "",
-            config_method: ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as c_int,
-        });
-        out.push(HwCandidate {
-            backend: DecodeBackend::Dxva2,
-            device_type: ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2,
-            pix_fmt: ffi::AVPixelFormat::AV_PIX_FMT_DXVA2_VLD,
-            device_name: "",
-            config_method: ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as c_int,
-        });
-    }
-    #[cfg(target_os = "macos")]
-    {
-        out.push(HwCandidate {
-            backend: DecodeBackend::VideoToolbox,
-            device_type: ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-            pix_fmt: ffi::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX,
-            device_name: "",
-            config_method: ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as c_int,
-        });
-    }
-    out
-}
-
-/// Check that `codec` advertises `candidate` in its hardware config list.
+/// `get_format` callback: prefer the hardware format we set up, otherwise take
+/// the decoder's first offer so playback continues in software.
 ///
 /// # Safety
-///
-/// `codec` must be a valid `AVCodec` pointer owned by FFmpeg (it is obtained
-/// from `AVCodecContext::codec`, which is never NULL once the decoder context
-/// has been created from stream parameters).
-pub unsafe fn probe_codec_hw_support(
-    codec: *const ffi::AVCodec,
-    candidate: &HwCandidate,
-) -> bool {
-    if codec.is_null() {
-        return false;
-    }
-    let mut seen = false;
-    // SAFETY: `codec` was checked non-null above and points at a codec owned by
-    // FFmpeg. `avcodec_get_hw_config` returns NULL once the list ends, so the
-    // loop terminates and each non-null element is a valid config struct that
-    // lives as long as the codec.
-    unsafe {
-        let mut index: c_int = 0;
-        loop {
-            let config = ffi::avcodec_get_hw_config(codec, index);
-            if config.is_null() {
-                break;
-            }
-            let cfg = &*config;
-            if cfg.pix_fmt == candidate.pix_fmt
-                && cfg.methods & candidate.config_method != 0
-            {
-                seen = true;
-                break;
-            }
-            index += 1;
-            // A decoder will never publish more than a handful of configs; the
-            // guard keeps a malformed list from spinning forever.
-            if index > 64 {
-                break;
-            }
-        }
-    }
-    seen
-}
-
-/// Owns an `AVBufferRef*` returned by `av_hwdevice_ctx_create`.
-pub struct HwDevice {
-    /// The refcounted device context (`AVBufferRef*` whose `data` is the
-    /// `AVHWDeviceContext`). Null only after `release`.
-    raw: *mut ffi::AVBufferRef,
-    /// Which candidate produced it.
-    pub candidate: HwCandidate,
-}
-
-// SAFETY: av_hwdevice_ctx_create returns a refcounted AVBufferRef whose
-// internal reference counting is thread safe (`av_buffer_ref`/`av_buffer_unref`
-// are atomic). The device context itself is only used from the owning decode
-// worker thread, which is the only thread that ever dereferences it.
-unsafe impl Send for HwDevice {}
-
-impl HwDevice {
-    /// Create a hardware device for `candidate`.
-    ///
-    /// # Safety
-    ///
-    /// FFmpeg's global initialisation (`ffmpeg::init`) must have run, and the
-    /// caller must not free the returned context except through `release`.
-    pub unsafe fn create(candidate: HwCandidate) -> Result<Self, HwError> {
-        let mut raw: *mut ffi::AVBufferRef = ptr::null_mut();
-        let cname = std::ffi::CString::new(candidate.device_name)
-            .map_err(|_| HwError::Setup("device name contains NUL".into()))?;
-        let name_ptr = if candidate.device_name.is_empty() {
-            ptr::null()
-        } else {
-            cname.as_ptr()
-        };
-        // SAFETY: `raw` is a valid out-pointer; `name_ptr` is either NULL or a
-        // NUL-terminated C string that outlives the call; the options argument
-        // is NULL which FFmpeg documents as "use defaults".
-        let ret = unsafe {
-            ffi::av_hwdevice_ctx_create(
-                &mut raw,
-                candidate.device_type,
-                name_ptr,
-                ptr::null_mut(),
-                0,
-            )
-        };
-        if ret < 0 || raw.is_null() {
-            if !raw.is_null() {
-                // SAFETY: `raw` was set by FFmpeg and is a valid refcounted
-                // buffer that we own; releasing it balances the creation.
-                unsafe { ffi::av_buffer_unref(&mut raw) };
-            }
-            return Err(HwError::DeviceCreation(ret));
-        }
-        Ok(Self { raw, candidate })
-    }
-
-    /// Take another reference suitable for storing in `AVCodecContext`. The
-    /// returned pointer must be freed by FFmpeg when the codec context dies.
-    ///
-    /// # Safety
-    ///
-    /// The device must not have been released.
-    pub unsafe fn clone_ref(&self) -> *mut ffi::AVBufferRef {
-        if self.raw.is_null() {
-            return ptr::null_mut();
-        }
-        // SAFETY: `self.raw` is a live refcounted buffer; `av_buffer_ref`
-        // atomically increments the refcount and returns the same pointer.
-        unsafe { ffi::av_buffer_ref(self.raw) }
-    }
-
-    /// Release the device reference. Safe to call twice.
-    pub fn release(&mut self) {
-        if !self.raw.is_null() {
-            let mut raw = self.raw;
-            // SAFETY: we own exactly one reference to this buffer, and set
-            // `self.raw` to null afterwards so the reference is not released
-            // twice.
-            unsafe {
-                ffi::av_buffer_unref(&mut raw);
-            }
-            self.raw = ptr::null_mut();
-        }
-    }
-}
-
-impl Drop for HwDevice {
-    fn drop(&mut self) {
-        self.release();
-    }
-}
-
-/// The `get_format` callback installed on the codec context.
-///
-/// # Safety
-///
-/// Called by libavcodec while decoding. `ctx` is the `AVCodecContext` we
-/// configured and `pix_fmts` is a NULL-terminated list owned by FFmpeg that is
-/// valid for the duration of the call. We only read them.
-pub unsafe extern "C" fn get_format_cb(
-    ctx: *mut ffi::AVCodecContext,
-    pix_fmts: *const ffi::AVPixelFormat,
+/// Called by FFmpeg with a valid, NUL-terminated list of pixel formats that
+/// lives for the duration of the call.
+unsafe extern "C" fn get_format(
+    _ctx: *mut ffi::AVCodecContext,
+    formats: *const ffi::AVPixelFormat,
 ) -> ffi::AVPixelFormat {
-    if pix_fmts.is_null() {
+    if formats.is_null() {
         return ffi::AVPixelFormat::AV_PIX_FMT_NONE;
     }
-    // SAFETY: `ctx` is the context FFmpeg is decoding with; it is alive for the
-    // whole decode session. Reading its `opaque` field is a plain field access.
-    let target = unsafe { (*ctx).opaque as usize as i32 };
-    // SAFETY: `pix_fmts` is a NULL-terminated array of enum values supplied by
-    // FFmpeg; we stop at the first AV_PIX_FMT_NONE sentinel. Discriminants are
-    // read through `as i32` because `opaque` carries a plain integer.
+    let desired = DESIRED.with(|d| d.get());
+    let mut index = 0isize;
+    // SAFETY: we stop at AV_PIX_FMT_NONE, which FFmpeg guarantees terminates
+    // the array it passes in.
     unsafe {
-        let mut i = 0isize;
+        let first = *formats;
         loop {
-            let fmt = *pix_fmts.offset(i);
-            if fmt == ffi::AVPixelFormat::AV_PIX_FMT_NONE {
+            let format = *formats.offset(index);
+            if format == ffi::AVPixelFormat::AV_PIX_FMT_NONE {
                 break;
             }
-            if fmt as i32 == target {
-                return fmt;
+            if Some(format) == desired {
+                return format;
             }
-            i += 1;
-            if i > 256 {
-                break;
+            index += 1;
+        }
+        if first == ffi::AVPixelFormat::AV_PIX_FMT_NONE {
+            ffi::AVPixelFormat::AV_PIX_FMT_NONE
+        } else {
+            first
+        }
+    }
+}
+
+/// A hardware device shared with one codec context.
+pub struct HwDecoder {
+    backend: HwBackend,
+    device_ctx: *mut ffi::AVBufferRef,
+    pix_fmt: ffi::AVPixelFormat,
+    /// The format the decoder hands back; frames in this format live in device
+    /// memory and must be transferred before they can be sampled.
+    device_pix_fmt: ffi::AVPixelFormat,
+}
+
+// SAFETY: the only non-Send member is the `AVBufferRef` owned by this struct,
+// which FFmpeg refcounts and which nothing else touches after `attach`.
+unsafe impl Send for HwDecoder {}
+
+impl Drop for HwDecoder {
+    fn drop(&mut self) {
+        DESIRED.with(|d| d.set(None));
+        if !self.device_ctx.is_null() {
+            // SAFETY: `device_ctx` was produced by av_hwdevice_ctx_create /
+            // av_buffer_ref and is dropped exactly once, here.
+            unsafe { ffi::av_buffer_unref(&mut self.device_ctx) };
+        }
+    }
+}
+
+impl HwDecoder {
+    pub fn backend(&self) -> HwBackend {
+        self.backend
+    }
+
+    /// The format frames arrive in (device memory) when hardware decoding is
+    /// really in use.
+    pub fn device_pix_fmt(&self) -> ffi::AVPixelFormat {
+        self.device_pix_fmt
+    }
+
+    pub fn hardware_pix_fmt(&self) -> ffi::AVPixelFormat {
+        self.pix_fmt
+    }
+
+    /// Try every platform device in order and attach the first that works.
+    ///
+    /// # Safety
+    /// `ctx` must be a valid, not yet opened `AVCodecContext` and `codec` the
+    /// `AVCodec` it will be opened with. Both must outlive the returned value.
+    pub unsafe fn attach(
+        ctx: *mut ffi::AVCodecContext,
+        codec: *const ffi::AVCodec,
+        preference: HwAccelPref,
+    ) -> Option<Self> {
+        if !preference.allows_hardware() || ctx.is_null() || codec.is_null() {
+            return None;
+        }
+        for backend in HwBackend::candidates() {
+            // SAFETY: `codec` is a non-null AVCodec pointer owned by FFmpeg.
+            let Some(pix_fmt) = (unsafe { supported_hw_format(codec, backend.device_type()) })
+            else {
+                continue;
+            };
+            let mut device_ctx: *mut ffi::AVBufferRef = ptr::null_mut();
+            // SAFETY: the out-pointer is valid; the device string is NULL so
+            // FFmpeg picks the platform default (for VAAPI, the first render
+            // node), and the dictionary pointer is NULL for defaults.
+            let created = unsafe {
+                ffi::av_hwdevice_ctx_create(
+                    &mut device_ctx,
+                    backend.device_type(),
+                    ptr::null(),
+                    ptr::null_mut(),
+                    0,
+                )
+            };
+            if created < 0 || device_ctx.is_null() {
+                continue;
+            }
+            // SAFETY: `device_ctx` is a fresh reference; av_buffer_ref makes a
+            // second one for the codec context, which FFmpeg releases when the
+            // context is closed.
+            let shared = unsafe { ffi::av_buffer_ref(device_ctx) };
+            if shared.is_null() {
+                // SAFETY: we own the only reference to `device_ctx`.
+                unsafe { ffi::av_buffer_unref(&mut device_ctx) };
+                continue;
+            }
+            DESIRED.with(|d| d.set(Some(pix_fmt)));
+            // SAFETY: the context is not open yet, so its fields may be set.
+            unsafe {
+                (*ctx).get_format = Some(get_format);
+                (*ctx).hw_device_ctx = shared;
+            }
+            return Some(Self {
+                backend: *backend,
+                device_ctx,
+                pix_fmt,
+                device_pix_fmt: pix_fmt,
+            });
+        }
+        None
+    }
+
+    /// Detach from a context that failed to open, so a software retry starts
+    /// from a clean state.
+    ///
+    /// # Safety
+    /// `ctx` must be the context this device was attached to and must not be
+    /// open.
+    pub unsafe fn detach(ctx: *mut ffi::AVCodecContext) {
+        if ctx.is_null() {
+            return;
+        }
+        // SAFETY: the codec context is not open, so writing these fields is
+        // sound; av_buffer_unref drops the reference we created in `attach`.
+        unsafe {
+            (*ctx).get_format = None;
+            if !(*ctx).hw_device_ctx.is_null() {
+                ffi::av_buffer_unref(&mut (*ctx).hw_device_ctx);
             }
         }
     }
-    ffi::AVPixelFormat::AV_PIX_FMT_NONE
-}
 
-/// Attach `device` and the `get_format` callback to `ctx`.
-///
-/// # Safety
-///
-/// `ctx` must be the `AVCodecContext` of a decoder that has not been opened
-/// yet (`avcodec_open2` must still be in the future), and `device` must be
-/// alive. On success the codec context owns its own reference to the device.
-pub unsafe fn attach_device(
-    ctx: *mut ffi::AVCodecContext,
-    device: &HwDevice,
-    candidate: HwCandidate,
-) -> Result<(), HwError> {
-    if ctx.is_null() {
-        return Err(HwError::Setup("null codec context".into()));
-    }
-    // SAFETY: `device` is alive and owns a reference; `clone_ref` hands us a
-    // second reference whose ownership is transferred to the codec context,
-    // which releases it in avcodec_close/avcodec_free_context.
-    let cloned = unsafe { device.clone_ref() };
-    if cloned.is_null() {
-        return Err(HwError::Setup("could not reference the hw device".into()));
-    }
-    // SAFETY: `ctx` is a live codec context we exclusively own; storing the
-    // cloned reference there transfers ownership to FFmpeg. `opaque` carries
-    // the wanted pixel format into `get_format_cb`.
-    unsafe {
-        let old = (*ctx).hw_device_ctx;
-        if !old.is_null() {
-            let mut old = old;
-            ffi::av_buffer_unref(&mut old);
+    /// Copy a device-memory frame into `dst` (an allocated, unreferenced
+    /// `AVFrame`), converting to NV12 or YUV420P as the driver prefers.
+    ///
+    /// # Safety
+    /// `src` must be a frame decoded by the codec this device was attached to,
+    /// and `dst` must be a valid frame from `av_frame_alloc` that is currently
+    /// unreferenced.
+    pub unsafe fn transfer(src: *const ffi::AVFrame, dst: *mut ffi::AVFrame) -> Result<(), String> {
+        if src.is_null() || dst.is_null() {
+            return Err("hardware transfer: null frame".to_owned());
         }
-        (*ctx).hw_device_ctx = cloned;
-        (*ctx).get_format = Some(get_format_cb);
-        (*ctx).opaque = candidate.pix_fmt as usize as *mut c_void;
-    }
-    Ok(())
-}
-
-/// Allocate a system-memory `AVFrame` suitable for `av_hwframe_transfer_data`.
-///
-/// # Safety
-///
-/// The source `frame` must be a valid hardware frame; the returned frame must
-/// be freed with `av_frame_free` (the caller does this through
-/// `ffmpeg_next::util::frame::Video::wrap` after construction, or with
-/// `av_frame_free` directly).
-pub unsafe fn allocate_transfer_frame(
-    src: *const ffi::AVFrame,
-    dst_format: ffi::AVPixelFormat,
-) -> Result<*mut ffi::AVFrame, HwError> {
-    if src.is_null() {
-        return Err(HwError::Setup("null source frame".into()));
-    }
-    // SAFETY: `src` is non-null; we read width/height to size the destination.
-    let (w, h) = unsafe { ((*src).width, (*src).height) };
-    if w <= 0 || h <= 0 {
-        return Err(HwError::Setup("hardware frame has no dimensions".into()));
-    }
-    // SAFETY: `av_frame_alloc` returns an empty owned frame or NULL.
-    let dst = unsafe { ffi::av_frame_alloc() };
-    if dst.is_null() {
-        return Err(HwError::Setup("av_frame_alloc failed".into()));
-    }
-    // SAFETY: `dst` is a valid owned frame; we set only scalar fields that
-    // FFmpeg documents before calling av_frame_get_buffer.
-    unsafe {
-        // `AVFrame::format` is a plain `c_int` in the C struct.
-        (*dst).format = dst_format as c_int;
-        (*dst).width = w;
-        (*dst).height = h;
-        let ret = ffi::av_frame_get_buffer(dst, 1);
-        if ret < 0 {
-            ffi::av_frame_free(&mut { dst });
-            return Err(HwError::Transfer(ret));
+        // SAFETY: both frames are valid; FFmpeg writes into dst's buffers.
+        let result = unsafe { ffi::av_hwframe_transfer_data(dst, src, 0) };
+        if result < 0 {
+            return Err(format!("av_hwframe_transfer_data failed ({result})"));
         }
-    }
-    Ok(dst)
-}
-
-/// Transfer a hardware frame into `dst` (a system-memory frame).
-///
-/// # Safety
-///
-/// Both frames must be valid and distinct.
-pub unsafe fn transfer_to_system(
-    src: *const ffi::AVFrame,
-    dst: *mut ffi::AVFrame,
-) -> Result<(), HwError> {
-    // SAFETY: both pointers are valid frames owned by the caller and are
-    // distinct buffers, as required by av_hwframe_transfer_data.
-    let ret = unsafe { ffi::av_hwframe_transfer_data(dst, src, 0) };
-    if ret < 0 {
-        Err(HwError::Transfer(ret))
-    } else {
+        // SAFETY: dst is a valid frame; copying props keeps pts and color tags.
+        unsafe {
+            if ffi::av_frame_copy_props(dst, src) < 0 {
+                // Not fatal: we read the timestamp we already know.
+            }
+        }
         Ok(())
     }
 }
 
-/// Free a frame allocated by [`allocate_transfer_frame`].
+/// Look through the codec's hardware configurations for one that this device
+/// type can drive, and return the hardware pixel format to ask for.
 ///
 /// # Safety
-///
-/// The pointer must come from `av_frame_alloc` and not be used afterwards.
-pub unsafe fn free_frame(frame: *mut ffi::AVFrame) {
-    if !frame.is_null() {
-        // SAFETY: ownership of the frame is transferred into this call; the
-        // local copy of the pointer is dropped immediately afterwards.
-        unsafe {
-            let mut f = frame;
-            ffi::av_frame_free(&mut f);
+/// `codec` must be a valid `AVCodec` pointer.
+unsafe fn supported_hw_format(
+    codec: *const ffi::AVCodec,
+    device_type: ffi::AVHWDeviceType,
+) -> Option<ffi::AVPixelFormat> {
+    let mut index: c_int = 0;
+    loop {
+        // SAFETY: avcodec_get_hw_config returns NULL past the last entry.
+        let config = unsafe { ffi::avcodec_get_hw_config(codec, index) };
+        if config.is_null() {
+            return None;
         }
-    }
-}
-
-/// Decide which candidates to try for a given preference.
-pub fn candidates_for(preference: HardwareAccel) -> Vec<HwCandidate> {
-    match preference {
-        HardwareAccel::SoftwareOnly => Vec::new(),
-        HardwareAccel::Auto | HardwareAccel::HardwarePreferred => device_candidates(),
+        // SAFETY: the pointer was non-null and points at a static config.
+        let config = unsafe { &*config };
+        if config.device_type == device_type
+            && (config.methods & ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as c_int) != 0
+        {
+            return Some(config.pix_fmt);
+        }
+        index += 1;
     }
 }
 
@@ -527,89 +349,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn software_badge_is_sw() {
-        assert_eq!(DecodeBackend::Software.badge(), "SW");
-        assert!(!DecodeBackend::Software.is_hardware());
+    fn badges_match_the_spec() {
+        assert_eq!(HwBackend::Vaapi.badge(), "VAAPI");
+        assert_eq!(HwBackend::Vulkan.badge(), "VULKAN");
+        assert_eq!(HwBackend::Vdpau.badge(), "VDPAU");
+        assert_eq!(HwBackend::D3d11va.badge(), "D3D11VA");
+        assert_eq!(HwBackend::Dxva2.badge(), "DXVA2");
+        assert_eq!(HwBackend::VideoToolbox.badge(), "VT");
+        assert_eq!(HwBackend::Software.badge(), "SW");
     }
 
     #[test]
-    fn all_backend_badges() {
-        assert_eq!(DecodeBackend::Vaapi.badge(), "VAAPI");
-        assert_eq!(DecodeBackend::Vulkan.badge(), "VULKAN");
-        assert_eq!(DecodeBackend::Vdpau.badge(), "VDPAU");
-        assert_eq!(DecodeBackend::D3d11va.badge(), "D3D11VA");
-        assert_eq!(DecodeBackend::Dxva2.badge(), "DXVA2");
-        assert_eq!(DecodeBackend::VideoToolbox.badge(), "VT");
-    }
-
-    #[test]
-    fn software_only_has_no_candidates() {
-        assert!(candidates_for(HardwareAccel::SoftwareOnly).is_empty());
-    }
-
-    #[test]
-    fn auto_and_preferred_use_the_platform_order() {
-        let auto = candidates_for(HardwareAccel::Auto);
-        let preferred = candidates_for(HardwareAccel::HardwarePreferred);
-        assert_eq!(auto, preferred);
-        #[cfg(target_os = "linux")]
-        {
-            let backends: Vec<DecodeBackend> = auto.iter().map(|c| c.backend).collect();
-            assert_eq!(
-                backends,
-                vec![
-                    DecodeBackend::Vaapi,
-                    DecodeBackend::Vulkan,
-                    DecodeBackend::Vdpau
-                ]
-            );
+    fn codes_round_trip() {
+        for backend in [
+            HwBackend::Software,
+            HwBackend::Vaapi,
+            HwBackend::Vulkan,
+            HwBackend::Vdpau,
+            HwBackend::D3d11va,
+            HwBackend::Dxva2,
+            HwBackend::VideoToolbox,
+        ] {
+            assert_eq!(HwBackend::from_code(backend.code()), backend);
         }
-        #[cfg(target_os = "windows")]
-        {
-            let backends: Vec<DecodeBackend> = auto.iter().map(|c| c.backend).collect();
-            assert_eq!(backends, vec![DecodeBackend::D3d11va, DecodeBackend::Dxva2]);
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let backends: Vec<DecodeBackend> = auto.iter().map(|c| c.backend).collect();
-            assert_eq!(backends, vec![DecodeBackend::VideoToolbox]);
-        }
+        assert_eq!(HwBackend::from_code(200), HwBackend::Software);
     }
 
     #[test]
-    fn probing_a_null_codec_is_false() {
-        let candidate = HwCandidate {
-            backend: DecodeBackend::Vaapi,
-            device_type: ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE,
-            pix_fmt: ffi::AVPixelFormat::AV_PIX_FMT_NONE,
-            device_name: "",
-            config_method: 0,
+    fn only_software_is_not_hardware() {
+        assert!(!HwBackend::Software.is_hardware());
+        assert!(HwBackend::Vaapi.is_hardware());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_prefers_vaapi_then_vulkan_then_vdpau() {
+        assert_eq!(
+            HwBackend::candidates(),
+            &[HwBackend::Vaapi, HwBackend::Vulkan, HwBackend::Vdpau]
+        );
+    }
+
+    #[test]
+    fn software_only_never_opens_a_device() {
+        // SAFETY: both pointers are null, which `attach` rejects before it
+        // dereferences anything.
+        let attached = unsafe {
+            HwDecoder::attach(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                HwAccelPref::SoftwareOnly,
+            )
         };
-        // SAFETY: the function explicitly handles a null codec pointer.
-        assert!(!unsafe { probe_codec_hw_support(std::ptr::null(), &candidate) });
-    }
-
-    #[test]
-    fn color_range_flags_match_shader_convention() {
-        assert_eq!(ColorRange::Limited.shader_flag(), 1.0);
-        assert_eq!(ColorRange::Full.shader_flag(), 0.0);
-        assert_eq!(
-            ColorRange::from_ffmpeg(ffmpeg_next::color::Range::JPEG),
-            ColorRange::Full
-        );
-        assert_eq!(
-            ColorRange::from_ffmpeg(ffmpeg_next::color::Range::MPEG),
-            ColorRange::Limited
-        );
-        assert_eq!(
-            ColorRange::from_ffmpeg(ffmpeg_next::color::Range::Unspecified),
-            ColorRange::Limited
-        );
-    }
-
-    #[test]
-    fn hw_error_display_is_informative() {
-        assert!(HwError::DeviceCreation(-5).to_string().contains("-5"));
-        assert!(HwError::UnsupportedCodec.to_string().contains("hardware"));
+        assert!(attached.is_none());
     }
 }

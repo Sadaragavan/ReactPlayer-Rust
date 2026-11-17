@@ -1,0 +1,114 @@
+name: ci
+on:
+  push:
+    # The job commits its own log back as ci-log.txt. Without this, that commit
+    # starts a second run which commits a log which starts a third, and every
+    # failure would be mailed twice.
+    paths-ignore:
+      - ci-log.txt
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Builds and tests on Arch Linux, the primary target, inside the official
+  # container so the FFmpeg/rustc/clang versions match what `pacman -S` gives a
+  # user. The full cargo output is committed back as ci-log.txt, because the
+  # agent sandbox cannot download Actions logs.
+  arch:
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    env:
+      CARGO_TERM_COLOR: never
+      CARGO_HOME: /root/.cargo
+    steps:
+      - name: packages
+        run: |
+          pacman -Syu --noconfirm --needed --quiet \
+            rust clang pkgconf git base-devel \
+            ffmpeg alsa-lib libva vulkan-icd-loader mesa wayland libxkbcommon \
+            libx11 libxcursor libxi libxrandr udev
+          rustc --version
+          pkg-config --modversion libavcodec libavformat libavutil libswscale libswresample
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            /root/.cargo/registry
+            /root/.cargo/git
+            target
+          key: arch-cargo-${{ github.run_id }}
+          restore-keys: |
+            arch-cargo-
+      - name: check
+        run: |
+          set +e
+          {
+            echo "===== cargo check --all-targets ====="
+            cargo check --all-targets 2>&1
+            echo "check exit: $?"
+            echo
+            echo "===== cargo test ====="
+            cargo test --all-targets 2>&1
+            echo "test exit: $?"
+            echo
+            echo "===== warning count ====="
+            cargo check --all-targets --message-format short 2>&1 | grep -c warning
+            echo
+            echo "===== cargo clippy --all-targets -- -D warnings ====="
+            cargo clippy --all-targets --all-features -- -D warnings 2>&1
+            echo "clippy exit: $?"
+            echo
+            echo "===== clippy warning count ====="
+            cargo clippy --all-targets --all-features --message-format short 2>&1 \
+              | grep -c "^warning" || true
+          } > ci-log.txt 2>&1
+          tail -40 ci-log.txt || true
+      - name: upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-log
+          path: ci-log.txt
+      # The log steps above deliberately do not fail the job, so the whole log is
+      # collected even when the build breaks. This is what makes the run red.
+      - name: gate
+        if: always()
+        run: |
+          if grep -qE '^(check|test|clippy) exit: [1-9]' ci-log.txt; then
+            echo "cargo failed, see ci-log.txt"
+            exit 1
+          fi
+          if [ "$(grep -oE 'clippy warning count =====' ci-log.txt | wc -l)" -gt 0 ]; then
+            count=$(awk '/clippy warning count/{getline; getline; print; exit}' ci-log.txt)
+            if [ "${count:-0}" -gt 0 ]; then
+              echo "clippy emitted $count warnings"
+              exit 1
+            fi
+          fi
+      - name: publish log
+        if: always()
+        env:
+          BRANCH: ${{ github.ref_name }}
+          TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          # Upload through the Contents API: it commits server-side, so it cannot
+          # lose a race with a push that landed while the job was running.
+          CONTENT=$(base64 -w0 ci-log.txt)
+          SHA=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/ci-log.txt?ref=$BRANCH" \
+              | tr ',' '\n' | sed -n 's/.*"sha": *"\([a-f0-9]\{40\}\)".*/\1/p' | head -1 || true)
+          if [ -n "$SHA" ]; then SHA_FIELD=",\"sha\":\"$SHA\""; else SHA_FIELD=""; fi
+          printf '{"message":"ci: run %s log","content":"%s","branch":"%s"%s}' \
+              "$GITHUB_RUN_ID" "$CONTENT" "$BRANCH" "$SHA_FIELD" > /tmp/payload.json
+          curl -sf -o /tmp/put.out -w 'put status: %{http_code}\n' -X PUT \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/json" \
+              --data-binary @/tmp/payload.json \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/ci-log.txt"
+          head -c 400 /tmp/put.out; echo

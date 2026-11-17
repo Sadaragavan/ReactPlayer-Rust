@@ -1,773 +1,438 @@
-//! Audio: per-track lock-free SPSC ring buffers mixed inside a single cpal
-//! output callback, plus the drift resampler.
+//! Audio output.
 //!
-//! ## Design
+//! One cpal output stream for the whole app. Each track owns a lock-free SPSC
+//! ring buffer of interleaved stereo `f32` at the device's sample rate; the
+//! single output callback mixes every unmuted, active slot with its volume and
+//! the master volume, and advances the master clock by the number of frames it
+//! consumed.
 //!
-//! * The decode worker owns the **producer** side and pushes interleaved stereo
-//!   `f32` [`PcmChunk`]s (already resampled to the device rate by swresample).
-//! * The cpal callback owns the **consumer** side of every track. It pops
-//!   slices, applies the fractional drift resampler, then mixes with per-track
-//!   volume/mute and the master volume.
-//! * On seek the callback drops every queued sample whose `epoch` is older than
-//!   the current seek epoch. The consumer never gets cleared from the producer
-//!   side -- the producer only ever writes.
-//! * The master clock is advanced by the number of frames the callback
-//!   consumed, with the cpal device-vs-callback timestamp delta as latency
-//!   compensation.
+//! Seeks are handled with an epoch counter: the decode worker bumps it, the
+//! callback notices the change and drains whatever is left of the old position
+//! instead of playing it. The producer never has to touch the consumer.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use ringbuf::traits::{Consumer, Observer, Producer, Split};
+use cpal::{FromSample, SampleFormat, SizedSample};
+use ringbuf::traits::{Consumer, Observer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 
-use super::audio_resample::DriftResampler;
-use super::sync_clock::{duration_us, MasterClock};
+use super::sync_clock::MasterClock;
 
-/// One chunk of interleaved stereo audio from a decode worker.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PcmChunk {
-    /// Media timestamp of the first frame, in microseconds.
-    pub pts_us: i64,
-    /// Seek epoch at push time. The callback drops chunks from older epochs.
-    pub epoch: u64,
-    /// Producer-side gain, applied in [`AudioRing::push_audio`]. The mixer
-    /// applies the session/mute volume on top of this.
-    pub volume: f32,
-    /// Interleaved stereo samples.
-    pub samples: Vec<f32>,
-}
+/// Layers that can have sound at once.
+pub const MAX_TRACKS: usize = 4;
 
-/// The producer-side half of one track's audio.
-pub struct AudioRing {
-    /// `Vec<f32>` values travel through the ring as `f32` samples; chunks carry
-    /// their own epoch/volume header inside the sample stream (see
-    /// [`AudioRing::push_audio`]).
-    producer: Mutex<Option<HeapProd<f32>>>,
-    capacity_samples: usize,
-    source_rate: AtomicU32,
-    source_channels: AtomicU32,
-    epoch: Arc<AtomicU64>,
-    /// Sample-exact position of the next pushed sample, in media microseconds.
-    next_pts_us: AtomicI64,
-}
+/// Ring capacity per track, in samples (stereo interleaved). Half a second at
+/// 48 kHz: enough to ride out a scheduling hiccup, small enough that a seek
+/// does not leave a second of stale audio behind.
+pub const RING_SAMPLES: usize = 48_000;
 
-impl std::fmt::Debug for AudioRing {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AudioRing")
-            .field("capacity_samples", &self.capacity_samples)
-            .field("source_rate", &self.source_rate.load(Ordering::Relaxed))
-            .finish()
-    }
-}
-
-impl AudioRing {
-    /// Create a producer ring with `rate` capacity worth of stereo samples
-    /// (about 250 ms).
-    pub fn new(rate: u32, channels: u16) -> Arc<Self> {
-        let capacity = (rate as usize).saturating_mul(channels as usize) / 4;
-        Arc::new(Self {
-            producer: Mutex::new(None),
-            capacity_samples: capacity.max(1024),
-            source_rate: AtomicU32::new(rate),
-            source_channels: AtomicU32::new(channels as u32),
-            epoch: Arc::new(AtomicU64::new(0)),
-            next_pts_us: AtomicI64::new(0),
-        })
-    }
-
-    /// Update the stream's sample rate/channels (before audio flows).
-    pub fn configure(&self, rate: u32, channels: u16) {
-        self.source_rate.store(rate, Ordering::Relaxed);
-        self.source_channels.store(channels as u32, Ordering::Relaxed);
-    }
-
-    /// Connect a consumer. Replaces (and drops) any previous consumer, which is
-    /// what a device change does.
-    pub fn attach_consumer(&self) -> AudioConsumer {
-        let (prod, cons) = HeapRb::<f32>::new(self.capacity_samples).split();
-        *self.producer.lock().unwrap_or_else(|p| p.into_inner()) = Some(prod);
-        AudioConsumer {
-            consumer: cons,
-            epoch: Arc::clone(&self.epoch),
-            resampler: DriftResampler::new(2),
-            pending: Vec::new(),
-            pending_epoch: u64::MAX,
-            rate_bits: AtomicU32::new(1.0f32.to_bits()),
-            volume_bits: AtomicU32::new(1.0f32.to_bits()),
-            muted: AtomicBool::new(false),
-            drops: 0,
-            frames_played: 0,
-        }
-    }
-
-    /// Current seek epoch.
-    pub fn epoch(&self) -> &Arc<AtomicU64> {
-        &self.epoch
-    }
-
-    /// Note a seek: subsequent pushes carry the new epoch and producers may
-    /// reset their resamplers. The consumer side drops stale chunks by itself.
-    pub fn mark_seek(&self, epoch: u64) {
-        self.epoch.store(epoch, Ordering::Release);
-        self.next_pts_us.store(0, Ordering::Relaxed);
-    }
-
-    /// Push a chunk. Never blocks: if the ring is full the oldest samples are
-    /// dropped by dropping *new* data, which keeps the producer real-time safe.
-    #[allow(clippy::cast_possible_truncation)]
-    pub fn push_audio(&self, chunk: PcmChunk) {
-        let mut guard = self.producer.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(prod) = guard.as_mut() else {
-            return;
-        };
-        // The ring is a bare interleaved stereo `f32` stream; the seek epoch
-        // is published through the shared atomic instead of a per-chunk header
-        // (`mark_seek`). Partial writes are fine: the consumer simply reads
-        // whatever is available and pads the rest with silence.
-        //
-        // Unity gain is the common case, so the scaling pass is skipped rather
-        // than copying the whole chunk to multiply it by 1.0.
-        if (chunk.volume - 1.0).abs() < f32::EPSILON {
-            let _ = prod.push_slice(&chunk.samples);
-        } else {
-            // Scale into a scratch copy and push once: pushing sample by sample
-            // would take the ring's cursor bookkeeping path N times per chunk.
-            let scaled: Vec<f32> = chunk.samples.iter().map(|s| s * chunk.volume).collect();
-            let _ = prod.push_slice(&scaled);
-        }
-    }
-
-    /// Number of stereo frames buffered (approximate, for the UI meter).
-    pub fn buffered_frames(&self) -> usize {
-        let guard = self.producer.lock().unwrap_or_else(|p| p.into_inner());
-        match guard.as_ref() {
-            Some(p) => p.occupied_len() / 2,
-            None => 0,
-        }
-    }
-}
-
-/// Consumer-side handle for one track, owned by the mixer.
-pub struct AudioConsumer {
-    consumer: HeapCons<f32>,
-    epoch: Arc<AtomicU64>,
-    resampler: DriftResampler,
-    pending: Vec<f32>,
-    pending_epoch: u64,
-    rate_bits: AtomicU32,
-    volume_bits: AtomicU32,
+/// One track's connection to the mixer.
+pub struct AudioSlot {
+    /// Bumped by the decode worker on every seek.
+    epoch: AtomicU64,
+    volume: AtomicU32,
     muted: AtomicBool,
-    /// Count of samples discarded because of stale epochs.
-    drops: u64,
-    /// Stereo frames produced since the last reset.
-    frames_played: u64,
+    /// True while this track's material should be heard.
+    active: AtomicBool,
+    producer: Mutex<Option<HeapProd<f32>>>,
 }
 
-impl AudioConsumer {
-    /// Set the drift rate (clamped by the resampler).
-    pub fn set_rate(&self, rate: f32) {
-        self.rate_bits.store(rate.to_bits(), Ordering::Relaxed);
-        // The resampler itself is only touched from the audio callback; the
-        // stored ratio is applied there.
+impl AudioSlot {
+    fn new(producer: HeapProd<f32>) -> Self {
+        Self {
+            epoch: AtomicU64::new(0),
+            volume: AtomicU32::new(1.0f32.to_bits()),
+            muted: AtomicBool::new(false),
+            active: AtomicBool::new(false),
+            producer: Mutex::new(Some(producer)),
+        }
     }
 
-    /// Set the per-track volume.
+    /// Hand the writer end to the track's audio worker. Only the first call
+    /// succeeds; a track never reattaches to a different slot.
+    pub fn take_producer(&self) -> Option<HeapProd<f32>> {
+        match self.producer.lock() {
+            Ok(mut guard) => guard.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        }
+    }
+
+    pub fn bump_epoch(&self) -> u64 {
+        self.epoch.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
+    }
+
     pub fn set_volume(&self, volume: f32) {
-        self.volume_bits
-            .store(volume.clamp(0.0, 2.0).to_bits(), Ordering::Relaxed);
+        self.volume
+            .store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
-    /// Mute/unmute.
     pub fn set_muted(&self, muted: bool) {
         self.muted.store(muted, Ordering::Relaxed);
     }
 
-    /// Samples dropped due to seeks.
-    pub fn drops(&self) -> u64 {
-        self.drops
+    pub fn set_active(&self, active: bool) {
+        self.active.store(active, Ordering::Relaxed);
     }
 
-    /// Reset the played-frame counter (used after seeks).
-    pub fn take_frames_played(&mut self) -> u64 {
-        let n = self.frames_played;
-        self.frames_played = 0;
-        n
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
     }
-
-    /// Pull `frames` stereo frames into `out` (interleaved, length
-    /// `frames * 2`), applying the drift ratio. Missing data reads as silence.
-    pub fn fill(&mut self, out: &mut [f32]) {
-        let frames = out.len() / 2;
-        for s in out.iter_mut() {
-            *s = 0.0;
-        }
-        if frames == 0 {
-            return;
-        }
-        self.resampler
-            .set_ratio(f32::from_bits(self.rate_bits.load(Ordering::Relaxed)));
-
-        // Steady state: the ring holds a bare interleaved sample stream. We
-        // keep `frames + history` stereo frames of input available and then
-        // pull exactly `frames` interpolated output frames.
-        //
-        // When the epoch changed since the last callback, everything queued
-        // belongs to the old position and must be skipped *and counted*.
-        let current_epoch = self.epoch.load(Ordering::Acquire);
-        if current_epoch != self.pending_epoch {
-            self.pending_epoch = current_epoch;
-            let stale = self.consumer.occupied_len();
-            if stale > 0 {
-                let skipped = self.consumer.skip(stale);
-                self.drops = self.drops.saturating_add(skipped as u64);
-            }
-            self.pending.clear();
-            self.resampler.reset();
-        }
-
-        let needed = frames * 2 + 8;
-        while self.pending.len() < needed {
-            let want = needed - self.pending.len();
-            let mut buf = vec![0.0f32; want];
-            let n = self.consumer.pop_slice(&mut buf);
-            if n == 0 {
-                break;
-            }
-            self.pending.extend_from_slice(&buf[..n]);
-        }
-
-        let mut scratch = vec![0.0f32; frames * 2 + 16];
-        let produced = self.resampler.process(&self.pending, &mut scratch);
-        let vol = f32::from_bits(self.volume_bits.load(Ordering::Relaxed));
-        let muted = self.muted.load(Ordering::Relaxed);
-        let gain = if muted { 0.0 } else { vol };
-        let n = produced.min(frames);
-        for i in 0..n {
-            out[i * 2] = scratch[i * 2] * gain;
-            out[i * 2 + 1] = scratch[i * 2 + 1] * gain;
-        }
-        self.frames_played += n as u64;
-
-        // Keep the tail that the interpolator still needs.
-        if self.pending.len() > 8 {
-            let keep_from = self.pending.len() - 8;
-            self.pending.drain(0..keep_from);
-        }
-    }
-
 }
 
-/// Snapshot of one track for the mixer.
-pub struct MixSource {
-    /// The consumer to pull from.
-    pub consumer: AudioConsumer,
-    /// Layer id (for diagnostics).
-    pub layer_id: u64,
+/// What happened when the app tried to open an output device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AudioStatus {
+    Running {
+        device: String,
+        rate: u32,
+        channels: u16,
+    },
+    /// No output device at all: the clock falls back to `Instant`.
+    NoDevice,
+    /// A device exists but the stream would not open.
+    Failed(String),
 }
 
-/// The audio output device plus the mixer state shared with the callback.
+impl AudioStatus {
+    pub fn is_running(&self) -> bool {
+        matches!(self, Self::Running { .. })
+    }
+
+    pub fn summary(&self) -> String {
+        match self {
+            Self::Running {
+                device,
+                rate,
+                channels,
+            } => format!("{device} · {rate} Hz · {channels} ch"),
+            Self::NoDevice => "no output device".to_owned(),
+            Self::Failed(reason) => format!("audio unavailable: {reason}"),
+        }
+    }
+}
+
+/// The audio device, its slots, and the stream that mixes them.
 pub struct AudioEngine {
-    /// The cpal stream. Kept alive for as long as audio should play.
-    stream: Option<cpal::Stream>,
-    /// Device sample rate used for every track's resampler.
-    pub sample_rate: u32,
-    /// Master volume in `0..=1`.
+    slots: Vec<Arc<AudioSlot>>,
     master_volume: Arc<AtomicU32>,
-    /// Layer ids and their consumers, guarded because the callback needs them
-    /// and the UI updates them when tracks are added/removed.
-    sources: Arc<Mutex<Vec<MixSource>>>,
-    /// True when a real output stream is running.
-    pub device_available: bool,
-    /// Master clock advanced by the callback.
-    pub clock: Arc<MasterClock>,
-    /// Last error reported by cpal.
-    pub last_error: Arc<Mutex<Option<String>>>,
-    /// Number of stereo frames the callback has produced.
-    pub frames_out: Arc<AtomicU64>,
+    status: AudioStatus,
+    device_rate: u32,
+    channels: u16,
+    // Kept alive for the life of the app; dropping it stops the stream.
+    _stream: Option<cpal::Stream>,
 }
 
 impl AudioEngine {
-    /// An engine with no device at all. The clock then runs on `Instant`.
-    pub fn silent() -> Self {
-        Self::try_build(Arc::new(MasterClock::new()), false)
-    }
-
-    /// An engine that opens the default output device (falling back to a
-    /// silent engine when no device exists).
-    ///
-    /// `clock` is the engine's master clock: the output callback is what
-    /// advances it, so the caller and the callback must share one instance.
-    pub fn with_device(clock: Arc<MasterClock>) -> Self {
-        Self::try_build(clock, true)
-    }
-
-    /// Try to open the default output device. Always succeeds: when no device
-    /// exists the engine runs without a stream and the clock falls back to
-    /// `Instant`.
-    pub fn new(clock: Arc<MasterClock>) -> Self {
-        Self::try_build(clock, true)
-    }
-
-    fn try_build(clock: Arc<MasterClock>, use_device: bool) -> Self {
-        if !use_device {
-            clock.set_audio_driven(false);
-            return Self {
-                stream: None,
-                sample_rate: 48_000,
-                master_volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
-                sources: Arc::new(Mutex::new(Vec::new())),
-                device_available: false,
-                clock,
-                last_error: Arc::new(Mutex::new(None)),
-                frames_out: Arc::new(AtomicU64::new(0)),
-            };
+    /// Open the default output device. Never fails: a machine without sound
+    /// still plays video, on the `Instant` clock.
+    pub fn start(clock: Arc<MasterClock>) -> Self {
+        let mut slots = Vec::with_capacity(MAX_TRACKS);
+        let mut consumers: Vec<Option<HeapCons<f32>>> = Vec::with_capacity(MAX_TRACKS);
+        for _ in 0..MAX_TRACKS {
+            let ring = HeapRb::<f32>::new(RING_SAMPLES);
+            let (prod, cons) = ring.split();
+            slots.push(Arc::new(AudioSlot::new(prod)));
+            consumers.push(Some(cons));
         }
+
         let master_volume = Arc::new(AtomicU32::new(1.0f32.to_bits()));
-        let sources: Arc<Mutex<Vec<MixSource>>> = Arc::new(Mutex::new(Vec::new()));
-        let last_error = Arc::new(Mutex::new(None));
-        let frames_out = Arc::new(AtomicU64::new(0));
-
-        match Self::try_open(
-            Arc::clone(&clock),
-            Arc::clone(&master_volume),
-            Arc::clone(&sources),
-            Arc::clone(&last_error),
-            Arc::clone(&frames_out),
-        ) {
-            Ok((stream, rate)) => {
-                clock.set_audio_driven(true);
-                Self {
-                    stream: Some(stream),
-                    sample_rate: rate,
-                    master_volume,
-                    sources,
-                    device_available: true,
-                    clock,
-                    last_error,
-                    frames_out,
-                }
-            }
-            Err(e) => {
-                clock.set_audio_driven(false);
-                if let Ok(mut g) = last_error.lock() {
-                    *g = Some(e.clone());
-                }
-                Self {
-                    stream: None,
-                    sample_rate: 48_000,
-                    master_volume,
-                    sources,
-                    device_available: false,
-                    clock,
-                    last_error,
-                    frames_out,
-                }
-            }
-        }
-    }
-
-    fn try_open(
-        clock: Arc<MasterClock>,
-        master_volume: Arc<AtomicU32>,
-        sources: Arc<Mutex<Vec<MixSource>>>,
-        last_error: Arc<Mutex<Option<String>>>,
-        frames_out: Arc<AtomicU64>,
-    ) -> Result<(cpal::Stream, u32), String> {
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| "no default output device".to_string())?;
-        let config = device
-            .default_output_config()
-            .map_err(|e| format!("default_output_config: {e}"))?;
-        let sample_format = config.sample_format();
-        if sample_format != cpal::SampleFormat::F32 {
-            // The mixer produces f32; a device that only offers another format
-            // would need a conversion layer we do not pretend to have.
-            return Err(format!(
-                "default output device uses {sample_format:?} samples; reaction-player mixes in f32"
-            ));
-        }
-        // `SampleRate` has been a plain `u32` alias since 0.16.
-        let sample_rate = config.sample_rate();
-        let channels = config.channels() as usize;
-        let stream_config = config.config();
-        let err_flag = Arc::clone(&last_error);
-        let clock_cb = Arc::clone(&clock);
-        let sources_cb = Arc::clone(&sources);
-        let master_cb = Arc::clone(&master_volume);
-        let frames_cb = Arc::clone(&frames_out);
-        let rate = sample_rate;
+        let Some(device) = host.default_output_device() else {
+            return Self {
+                slots,
+                master_volume,
+                status: AudioStatus::NoDevice,
+                device_rate: super::sync_clock::DEFAULT_RATE,
+                channels: 2,
+                _stream: None,
+            };
+        };
+        let device_name = device
+            .description()
+            .map(|description| description.name().to_owned())
+            .unwrap_or_else(|_| "default output".to_owned());
 
-        let stream = device
-            .build_output_stream(
-                stream_config,
-                // The info type is inferred: naming it would pin us to a path
-                // that moved between cpal releases.
-                move |data: &mut [f32], info: &_| {
-                    let frames = data.len() / channels;
-                    let ts = info.timestamp();
-                    // Output latency: the predicted DAC instant minus the
-                    // instant the callback ran. cpal calls the former
-                    // `playback` for output streams (`device` is the input
-                    // counterpart). A host that reports no ordering yields
-                    // zero rather than a panic.
-                    let latency_us = duration_us(
-                        ts.playback
-                            .checked_duration_since(ts.callback)
-                            .unwrap_or(Duration::ZERO),
-                    );
+        let supported = match device.default_output_config() {
+            Ok(config) => config,
+            Err(e) => {
+                return Self {
+                    slots,
+                        master_volume,
+                    status: AudioStatus::Failed(format!("{e}")),
+                    device_rate: super::sync_clock::DEFAULT_RATE,
+                    channels: 2,
+                    _stream: None,
+                };
+            }
+        };
 
-                    let start = clock_cb.position_us();
-                    mix(
-                        data,
-                        channels,
-                        &sources_cb,
-                        f32::from_bits(master_cb.load(Ordering::Relaxed)),
-                    );
-                    clock_cb.publish_audio_anchor(start, latency_us, frames as u32, rate);
-                    frames_cb.fetch_add(frames as u64, Ordering::Relaxed);
+        let sample_format = supported.sample_format();
+        let config: cpal::StreamConfig = supported.into();
+        let rate = config.sample_rate;
+        let channels = config.channels;
+        clock.set_sample_rate(rate);
+
+        let mixer = Mixer {
+            consumers,
+            slots: slots.clone(),
+            clock: clock.clone(),
+            master_volume: master_volume.clone(),
+            channels: usize::from(channels),
+            epochs: vec![0; MAX_TRACKS],
+            scratch: vec![0.0; RING_SAMPLES.min(8_192)],
+            mixed: Vec::new(),
+        };
+
+        // `move`: the config and the error callback belong to the stream.
+        let build = move |mut mixer: Mixer| -> Result<cpal::Stream, cpal::Error> {
+            let error_callback = |err: cpal::Error| {
+                eprintln!("reaction-player: audio stream error: {err}");
+            };
+            match sample_format {
+                SampleFormat::F32 => device.build_output_stream(
+                    config,
+                    move |data: &mut [f32], info| mixer.render(data, info),
+                    error_callback,
+                    None,
+                ),
+                SampleFormat::I16 => {
+                    device.build_output_stream(
+                        config,
+                        move |data: &mut [i16], info| mixer.render_converted(data, info),
+                        error_callback,
+                        None,
+                    )
+                }
+                SampleFormat::U16 => {
+                    device.build_output_stream(
+                        config,
+                        move |data: &mut [u16], info| mixer.render_converted(data, info),
+                        error_callback,
+                        None,
+                    )
+                }
+                _ => Err(cpal::Error::new(cpal::ErrorKind::UnsupportedConfig)),
+            }
+        };
+
+        match build(mixer).and_then(|stream| {
+            stream.play()?;
+            Ok(stream)
+        }) {
+            Ok(stream) => Self {
+                slots,
+                master_volume,
+                status: AudioStatus::Running {
+                    device: device_name,
+                    rate,
+                    channels,
                 },
-                move |err| {
-                    if let Ok(mut g) = err_flag.lock() {
-                        *g = Some(format!("audio stream error: {err}"));
-                    }
-                },
-                None,
-            )
-            .map_err(|e| format!("build_output_stream: {e}"))?;
-        stream.play().map_err(|e| format!("stream play: {e}"))?;
-        Ok((stream, sample_rate))
-    }
-
-    /// Add a track's consumer to the mixer. Call before the track produces.
-    ///
-    /// Replaces any existing consumer for the same layer id: `insert_layer` is
-    /// documented as insert-or-replace, and appending a second consumer would
-    /// play the layer twice and mix two independent drift resamplers.
-    pub fn add_source(&self, layer_id: u64, consumer: AudioConsumer) {
-        if let Ok(mut g) = self.sources.lock() {
-            g.retain(|s| s.layer_id != layer_id);
-            g.push(MixSource {
-                consumer,
-                layer_id,
-            });
+                device_rate: rate,
+                channels,
+                _stream: Some(stream),
+            },
+            Err(e) => Self {
+                slots,
+                master_volume,
+                status: AudioStatus::Failed(format!("{e}")),
+                device_rate: rate,
+                channels,
+                _stream: None,
+            },
         }
     }
 
-    /// Remove a track from the mixer.
-    pub fn remove_source(&self, layer_id: u64) {
-        if let Ok(mut g) = self.sources.lock() {
-            g.retain(|s| s.layer_id != layer_id);
-        }
+    pub fn status(&self) -> &AudioStatus {
+        &self.status
     }
 
-    /// Set the per-track drift rate.
-    pub fn set_track_rate(&self, layer_id: u64, rate: f32) {
-        if let Ok(g) = self.sources.lock()
-            && let Some(s) = g.iter().find(|s| s.layer_id == layer_id)
-        {
-            s.consumer.set_rate(rate);
-        }
+    pub fn device_rate(&self) -> u32 {
+        self.device_rate
     }
 
-    /// Set the per-track volume.
-    pub fn set_track_volume(&self, layer_id: u64, volume: f32) {
-        if let Ok(g) = self.sources.lock()
-            && let Some(s) = g.iter().find(|s| s.layer_id == layer_id)
-        {
-            s.consumer.set_volume(volume);
-        }
+    pub fn channels(&self) -> u16 {
+        self.channels
     }
 
-    /// Set the per-track mute.
-    pub fn set_track_muted(&self, layer_id: u64, muted: bool) {
-        if let Ok(g) = self.sources.lock()
-            && let Some(s) = g.iter().find(|s| s.layer_id == layer_id)
-        {
-            s.consumer.set_muted(muted);
-        }
+    pub fn slot(&self, index: usize) -> Option<&Arc<AudioSlot>> {
+        self.slots.get(index)
     }
 
-    /// Master volume in `0..=1`.
     pub fn set_master_volume(&self, volume: f32) {
         self.master_volume
             .store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
-    /// Current master volume.
-    pub fn master_volume(&self) -> f32 {
-        f32::from_bits(self.master_volume.load(Ordering::Relaxed))
+    /// Silence every slot, e.g. when playback stops.
+    pub fn silence_all(&self) {
+        for slot in &self.slots {
+            slot.set_active(false);
+        }
     }
 
-    /// True when a real device is running.
-    pub fn device_available(&self) -> bool {
-        self.device_available
-    }
-
-    /// Stop and drop the stream.
-    pub fn shutdown(&mut self) {
-        self.stream = None;
-        self.device_available = false;
-        self.clock.set_audio_driven(false);
+    /// Silence one slot, e.g. when its layer is being replaced.
+    pub fn silence(&self, index: usize) {
+        if let Some(slot) = self.slots.get(index) {
+            slot.set_active(false);
+            let _ = slot.bump_epoch();
+        }
     }
 }
 
-/// Mix all sources into `data`. Called from the audio callback; must not
-/// allocate, lock for long or block.
-fn mix(data: &mut [f32], channels: usize, sources: &Mutex<Vec<MixSource>>, master: f32) {
-    let channels = channels.max(1);
-    let frames = data.len() / channels;
-    for s in data.iter_mut() {
-        *s = 0.0;
-    }
-    if frames == 0 {
-        return;
-    }
-    let mut mix_buf = vec![0.0f32; frames * 2];
-    if let Ok(mut guard) = sources.lock() {
-        for src in guard.iter_mut() {
-            src.consumer.fill(&mut mix_buf);
-            for f in 0..frames {
-                let l = mix_buf[f * 2];
-                let r = mix_buf[f * 2 + 1];
-                let base = f * channels;
-                if base < data.len() {
-                    data[base] += l;
-                }
-                if channels >= 2 && base + 1 < data.len() {
-                    data[base + 1] += r;
-                } else if channels == 1 && base < data.len() {
-                    data[base] += r * 0.5;
-                }
-                for extra in 2..channels {
-                    if base + extra < data.len() {
-                        data[base + extra] += (l + r) * 0.5;
-                    }
+/// The state the output callback owns.
+struct Mixer {
+    consumers: Vec<Option<HeapCons<f32>>>,
+    slots: Vec<Arc<AudioSlot>>,
+    clock: Arc<MasterClock>,
+    master_volume: Arc<AtomicU32>,
+    channels: usize,
+    epochs: Vec<u64>,
+    scratch: Vec<f32>,
+    /// Mixed f32 output for the current callback, resized only when the
+    /// device's buffer size changes.
+    mixed: Vec<f32>,
+}
+
+impl Mixer {
+    /// Mix `frames` frames of every active slot into `self.mixed` and advance
+    /// the clock by what the device consumed.
+    fn mix(&mut self, frames: usize, info: &cpal::OutputCallbackInfo) {
+        let channels = self.channels.max(1);
+        let samples = frames * channels;
+        self.mixed.clear();
+        self.mixed.resize(samples, 0.0);
+
+        let latency = Self::latency_us(info);
+        let master = f32::from_bits(self.master_volume.load(Ordering::Relaxed)).clamp(0.0, 1.0);
+
+        for index in 0..self.slots.len() {
+            let Some(cons) = self.consumers[index].as_mut() else {
+                continue;
+            };
+            let slot = &self.slots[index];
+            // A seek bumps the epoch: everything already in the ring belongs to
+            // the old position, so drop it instead of playing it.
+            let epoch = slot.epoch();
+            if epoch != self.epochs[index] {
+                let available = cons.occupied_len();
+                cons.skip(available);
+                self.epochs[index] = epoch;
+            }
+            if !slot.active.load(Ordering::Relaxed) || slot.muted.load(Ordering::Relaxed) {
+                let available = cons.occupied_len();
+                cons.skip(available);
+                continue;
+            }
+            let volume =
+                f32::from_bits(slot.volume.load(Ordering::Relaxed)).clamp(0.0, 1.0) * master;
+            if volume <= 0.0 {
+                let available = cons.occupied_len();
+                cons.skip(available);
+                continue;
+            }
+            let want = (frames * 2).min(self.scratch.len());
+            let got = cons.pop_slice(&mut self.scratch[..want]);
+            for frame in 0..got / 2 {
+                let left = self.scratch[frame * 2] * volume;
+                let right = self.scratch[frame * 2 + 1] * volume;
+                let base = frame * channels;
+                if channels == 1 {
+                    self.mixed[base] += 0.5 * (left + right);
+                } else if base + 1 < self.mixed.len() {
+                    self.mixed[base] += left;
+                    self.mixed[base + 1] += right;
                 }
             }
         }
-    }
-    for s in data.iter_mut() {
-        *s = (*s * master).clamp(-1.0, 1.0);
-    }
-}
 
-/// Headless mixer used by tests: no device, deterministic output.
-pub struct OfflineMixer {
-    /// The mixed output sample rate.
-    pub sample_rate: u32,
-}
-
-impl OfflineMixer {
-    /// Mix `frames` stereo frames from `sources` into a fresh buffer.
-    pub fn mix(sample_rate: u32, frames: usize, sources: &Mutex<Vec<MixSource>>, master: f32) -> Vec<f32> {
-        let mut out = vec![0.0f32; frames * 2];
-        mix(&mut out, 2, sources, master);
-        let _ = sample_rate;
-        out
+        self.clock.advance_frames(frames as i64, latency);
     }
-}
 
-/// Spawn a thread that pumps a fake producer into a floating consumer. Used by
-/// tests to prove the SPSC wiring and epoch dropping without a sound card.
-pub fn spawn_test_producer(ring: Arc<AudioRing>, epoch: u64, chunks: usize) -> Receiver<()> {
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        for i in 0..chunks {
-            ring.push_audio(PcmChunk {
-                pts_us: (i as i64) * 10_000,
-                epoch,
-                volume: 1.0,
-                samples: vec![0.25; 960],
-            });
+    fn render(&mut self, out: &mut [f32], info: &cpal::OutputCallbackInfo) {
+        let frames = out.len() / self.channels.max(1);
+        self.mix(frames, info);
+        let n = out.len().min(self.mixed.len());
+        out[..n].copy_from_slice(&self.mixed[..n]);
+    }
+
+    /// Same mix, written into a device format that is not `f32`.
+    fn render_converted<T: SizedSample + FromSample<f32>>(
+        &mut self,
+        out: &mut [T],
+        info: &cpal::OutputCallbackInfo,
+    ) {
+        let frames = out.len() / self.channels.max(1);
+        self.mix(frames, info);
+        for (index, sample) in out.iter_mut().enumerate() {
+            *sample = T::from_sample(self.mixed.get(index).copied().unwrap_or(0.0));
         }
-        let _ = tx.send(());
-    });
-    rx
+    }
+
+    fn latency_us(info: &cpal::OutputCallbackInfo) -> i64 {
+        let stamp = info.timestamp();
+        stamp
+            .playback
+            .checked_duration_since(stamp.callback)
+            .map(|d| d.as_micros() as i64)
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn ring_with_consumer() -> (Arc<AudioRing>, AudioConsumer) {
-        let ring = AudioRing::new(48_000, 2);
-        let cons = ring.attach_consumer();
-        (ring, cons)
+    #[test]
+    fn slots_start_inactive_and_unmuted() {
+        let ring = HeapRb::<f32>::new(64);
+        let (prod, _cons) = ring.split();
+        let slot = AudioSlot::new(prod);
+        assert!(!slot.is_active());
+        assert_eq!(slot.epoch(), 0);
+        assert!(slot.take_producer().is_some());
+        // Only the first take succeeds.
+        assert!(slot.take_producer().is_none());
     }
 
     #[test]
-    fn ring_round_trips_samples() {
-        let (ring, mut cons) = ring_with_consumer();
-        ring.push_audio(PcmChunk {
-            pts_us: 0,
-            epoch: 0,
-            volume: 1.0,
-            samples: vec![0.5; 4800],
-        });
-        let mut out = vec![0.0f32; 2048];
-        cons.fill(&mut out);
-        assert!(out.iter().any(|s| (*s - 0.5).abs() < 1e-3), "samples must flow");
+    fn epoch_bumps_monotonically() {
+        let ring = HeapRb::<f32>::new(16);
+        let (prod, _cons) = ring.split();
+        let slot = AudioSlot::new(prod);
+        assert_eq!(slot.bump_epoch(), 1);
+        assert_eq!(slot.bump_epoch(), 2);
+        assert_eq!(slot.epoch(), 2);
     }
 
     #[test]
-    fn stale_epoch_chunks_are_dropped() {
-        let (ring, mut cons) = ring_with_consumer();
-        ring.push_audio(PcmChunk {
-            pts_us: 0,
-            epoch: 0,
-            volume: 1.0,
-            samples: vec![0.9; 4800],
-        });
-        // A seek bumps the epoch.
-        ring.mark_seek(1);
-        let mut out = vec![0.0f32; 2048];
-        cons.fill(&mut out);
-        assert!(
-            out.iter().all(|s| s.abs() < 1e-6),
-            "pre-seek audio must be discarded"
-        );
-        assert!(cons.drops() > 0, "dropped samples are counted");
-
-        // Fresh audio for the new epoch is heard.
-        ring.push_audio(PcmChunk {
-            pts_us: 0,
-            epoch: 1,
-            volume: 1.0,
-            samples: vec![0.4; 4800],
-        });
-        let mut out = vec![0.0f32; 2048];
-        cons.fill(&mut out);
-        assert!(out.iter().any(|s| (*s - 0.4).abs() < 1e-2));
+    fn volume_and_mute_are_clamped() {
+        let ring = HeapRb::<f32>::new(16);
+        let (prod, _cons) = ring.split();
+        let slot = AudioSlot::new(prod);
+        slot.set_volume(4.0);
+        slot.set_muted(true);
+        slot.set_active(true);
+        assert!(slot.is_active());
+        assert!(slot.muted.load(Ordering::Relaxed));
     }
 
     #[test]
-    fn volume_and_mute_scale_output() {
-        let (ring, mut cons) = ring_with_consumer();
-        cons.set_volume(0.5);
-        ring.push_audio(PcmChunk {
-            pts_us: 0,
-            epoch: 0,
-            volume: 1.0,
-            samples: vec![0.8; 4800],
-        });
-        let mut out = vec![0.0f32; 1024];
-        cons.fill(&mut out);
-        let peak = out.iter().cloned().fold(0.0f32, |a, b| a.max(b.abs()));
-        assert!((peak - 0.4).abs() < 0.02, "peak was {peak}");
-
-        cons.set_muted(true);
-        ring.push_audio(PcmChunk {
-            pts_us: 0,
-            epoch: 0,
-            volume: 1.0,
-            samples: vec![0.8; 4800],
-        });
-        let mut out = vec![0.0f32; 1024];
-        cons.fill(&mut out);
-        assert!(out.iter().all(|s| *s == 0.0));
-    }
-
-    #[test]
-    fn empty_ring_produces_silence_not_panic() {
-        let (_ring, mut cons) = ring_with_consumer();
-        let mut out = vec![7.0f32; 512];
-        cons.fill(&mut out);
-        assert!(out.iter().all(|s| *s == 0.0));
-    }
-
-    #[test]
-    fn producer_never_blocks_when_ring_is_full() {
-        let (ring, _cons) = ring_with_consumer();
-        for _ in 0..100 {
-            ring.push_audio(PcmChunk {
-                pts_us: 0,
-                epoch: 0,
-                volume: 1.0,
-                samples: vec![0.1; 4096],
-            });
-        }
-        // Reaching here without deadlocking is the assertion.
-    }
-
-    #[test]
-    fn mixer_sums_two_sources() {
-        let a = AudioRing::new(48_000, 2);
-        let ca = a.attach_consumer();
-        let b = AudioRing::new(48_000, 2);
-        let cb = b.attach_consumer();
-        a.push_audio(PcmChunk {
-            pts_us: 0,
-            epoch: 0,
-            volume: 1.0,
-            samples: vec![0.2; 4800],
-        });
-        b.push_audio(PcmChunk {
-            pts_us: 0,
-            epoch: 0,
-            volume: 1.0,
-            samples: vec![0.3; 4800],
-        });
-        let sources = Mutex::new(vec![
-            MixSource {
-                consumer: ca,
-                layer_id: 1,
-            },
-            MixSource {
-                consumer: cb,
-                layer_id: 2,
-            },
-        ]);
-        let out = OfflineMixer::mix(48_000, 512, &sources, 1.0);
-        let peak = out.iter().cloned().fold(0.0f32, |a, b| a.max(b.abs()));
-        assert!((peak - 0.5).abs() < 0.02, "peak was {peak}");
-    }
-
-    #[test]
-    fn master_volume_scales_the_mix() {
-        let a = AudioRing::new(48_000, 2);
-        let ca = a.attach_consumer();
-        a.push_audio(PcmChunk {
-            pts_us: 0,
-            epoch: 0,
-            volume: 1.0,
-            samples: vec![0.6; 4800],
-        });
-        let sources = Mutex::new(vec![MixSource {
-            consumer: ca,
-            layer_id: 1,
-        }]);
-        let out = OfflineMixer::mix(48_000, 512, &sources, 0.5);
-        let peak = out.iter().cloned().fold(0.0f32, |a, b| a.max(b.abs()));
-        assert!((peak - 0.3).abs() < 0.02, "peak was {peak}");
-    }
-
-    #[test]
-    fn buffered_frames_reports_progress() {
-        let (ring, _cons) = ring_with_consumer();
-        ring.push_audio(PcmChunk {
-            pts_us: 0,
-            epoch: 0,
-            volume: 1.0,
-            samples: vec![0.0; 1920],
-        });
-        assert!(ring.buffered_frames() > 0);
-    }
-
-    #[test]
-    fn test_producer_thread_delivers_chunks() {
-        let ring = AudioRing::new(48_000, 2);
-        let mut cons = ring.attach_consumer();
-        let rx = spawn_test_producer(Arc::clone(&ring), 0, 8);
-        rx.recv().unwrap();
-        let mut out = vec![0.0f32; 8192];
-        cons.fill(&mut out);
-        assert!(out.iter().any(|s| (*s - 0.25).abs() < 1e-3));
+    fn status_text_is_human() {
+        assert_eq!(AudioStatus::NoDevice.summary(), "no output device");
+        assert!(!AudioStatus::NoDevice.is_running());
+        let running = AudioStatus::Running {
+            device: "Speakers".into(),
+            rate: 48_000,
+            channels: 2,
+        };
+        assert!(running.summary().contains("48"));
+        assert!(running.is_running());
+        assert!(AudioStatus::Failed("boom".into()).summary().contains("boom"));
     }
 }

@@ -1,607 +1,744 @@
-//! Session document: the persistent description of a multi-stream reaction
-//! layout.
+//! The session: a canvas, a stack of layers and the offsets that line them up.
+//!
+//! Everything here is plain data and pure functions, so it can be tested
+//! without a decoder, a GPU or a window. Z-order is explicit (`z_index`), any
+//! layer may be on top, and paint order is strictly ascending while hit-testing
+//! is strictly descending.
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use super::geom::{CropRect, NormalizedRect};
-use super::layout::{CanvasAspect, FitMode};
+use super::geom::{Crop, NormRect, Point, Size};
+use super::timeline;
 
-/// Current schema version written into every session file.
-pub const SCHEMA_VERSION: u32 = 1;
+/// Bumped whenever the on-disk shape changes in a way old builds cannot read.
+pub const SESSION_VERSION: u32 = 1;
 
-/// The role a layer plays, used when applying presets to new media.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum LayerRole {
-    /// The original video being reacted to.
+/// Milliseconds since the Unix epoch, as stored in session timestamps.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// A unique, sortable id for a session, preset or layer.
+pub fn new_id(prefix: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{:x}-{:x}", now_ms(), n)
+}
+
+/// What a layer is for. Only used for labels and preset mapping; any layer can
+/// be anywhere in the stack.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
     Source,
-    /// First reaction clip.
-    Reaction1,
-    /// Second reaction clip.
-    Reaction2,
-    /// Third reaction clip.
-    Reaction3,
-    /// Fourth (and further) reaction clips all map here.
-    ReactionOther,
+    Reaction,
+    Extra,
 }
 
-impl LayerRole {
-    /// Default display label.
-    pub fn default_label(self) -> &'static str {
+impl Role {
+    /// Default name for the nth layer of this role.
+    pub fn default_name(self, index: usize) -> String {
         match self {
-            LayerRole::Source => "Source",
-            LayerRole::Reaction1 => "Reaction 1",
-            LayerRole::Reaction2 => "Reaction 2",
-            LayerRole::Reaction3 => "Reaction 3",
-            LayerRole::ReactionOther => "Reaction",
-        }
-    }
-
-    /// Role for the n-th reaction layer (0-based).
-    pub fn reaction(index: usize) -> Self {
-        match index {
-            0 => LayerRole::Reaction1,
-            1 => LayerRole::Reaction2,
-            2 => LayerRole::Reaction3,
-            _ => LayerRole::ReactionOther,
+            Self::Source => "Source".to_owned(),
+            Self::Reaction => format!("Reaction {}", index + 1),
+            Self::Extra => format!("Extra {}", index + 1),
         }
     }
 }
 
-/// Hardware acceleration preference (see [`crate::engine::hwaccel`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum HardwareAccel {
-    /// Try hardware, fall back to software on any failure.
-    #[default]
-    Auto,
-    /// Try hardware but prefer it even when the hardware path is slower to
-    /// initialise; still falls back on failure.
-    HardwarePreferred,
-    /// Never touch hardware.
-    SoftwareOnly,
+/// The canvas shape. A fixed ratio keeps a layout pixel-exact at any window
+/// size; `Fill` follows the window instead.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CanvasAspect {
+    Ratio16x9,
+    Ratio9x16,
+    Ratio4x3,
+    Ratio1x1,
+    Ratio21x9,
+    Fill,
 }
 
-impl HardwareAccel {
-    /// All variants in menu order.
-    pub const ALL: [HardwareAccel; 3] = [
-        HardwareAccel::Auto,
-        HardwareAccel::HardwarePreferred,
-        HardwareAccel::SoftwareOnly,
+impl CanvasAspect {
+    pub const ALL: [Self; 6] = [
+        Self::Ratio16x9,
+        Self::Ratio9x16,
+        Self::Ratio4x3,
+        Self::Ratio1x1,
+        Self::Ratio21x9,
+        Self::Fill,
     ];
 
-    /// Label for the settings screen.
     pub fn label(self) -> &'static str {
         match self {
-            HardwareAccel::Auto => "Auto",
-            HardwareAccel::HardwarePreferred => "Hardware Preferred",
-            HardwareAccel::SoftwareOnly => "Software Only",
+            Self::Ratio16x9 => "16:9",
+            Self::Ratio9x16 => "9:16",
+            Self::Ratio4x3 => "4:3",
+            Self::Ratio1x1 => "1:1",
+            Self::Ratio21x9 => "21:9",
+            Self::Fill => "Fill window",
         }
     }
 
-    /// Description for the settings screen.
-    pub fn description(self) -> &'static str {
+    pub fn ratio(self) -> Option<f32> {
         match self {
-            HardwareAccel::Auto => "Decode on the GPU when it works, silently fall back to CPU.",
-            HardwareAccel::HardwarePreferred => "Prefer VAAPI/D3D11VA/VideoToolbox; fall back if unsupported.",
-            HardwareAccel::SoftwareOnly => "Always decode on the CPU (most compatible).",
+            Self::Ratio16x9 => Some(16.0 / 9.0),
+            Self::Ratio9x16 => Some(9.0 / 16.0),
+            Self::Ratio4x3 => Some(4.0 / 3.0),
+            Self::Ratio1x1 => Some(1.0),
+            Self::Ratio21x9 => Some(21.0 / 9.0),
+            Self::Fill => None,
+        }
+    }
+
+    /// The canvas rectangle that fits inside `available`.
+    pub fn size_in(self, available: Size) -> Size {
+        match self.ratio() {
+            None => available,
+            Some(ratio) => {
+                let by_width = Size::new(available.w, available.w / ratio);
+                if by_width.h <= available.h {
+                    by_width
+                } else {
+                    Size::new(available.h * ratio, available.h)
+                }
+            }
         }
     }
 }
 
-/// One video layer of a session.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LayerConfig {
-    /// Stable identifier, unique within the session.
-    pub id: u64,
-    /// User-visible label ("Source", "Reaction 1", ...).
-    pub label: String,
-    /// Semantic role.
-    pub role: LayerRole,
-    /// Absolute path or FFmpeg-supported URL.
-    pub source: String,
-    /// Geometry in normalized canvas space.
-    pub rect: NormalizedRect,
-    /// Z-order. Painted ascending; hit-tested descending.
+/// How the picture fills its layer rectangle.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FitMode {
+    /// Whole frame visible, letterboxed.
+    Contain,
+    /// Fill the rectangle, cropping the overflow.
+    Cover,
+}
+
+impl FitMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Contain => "Fit",
+            Self::Cover => "Fill",
+        }
+    }
+
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Contain => Self::Cover,
+            Self::Cover => Self::Contain,
+        }
+    }
+}
+
+/// Where the media comes from: a local file or an FFmpeg-supported URL.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum MediaSource {
+    File { path: PathBuf },
+    Url { url: String },
+}
+
+impl MediaSource {
+    pub fn file(path: impl Into<PathBuf>) -> Self {
+        Self::File { path: path.into() }
+    }
+
+    pub fn url(url: impl Into<String>) -> Self {
+        Self::Url { url: url.into() }
+    }
+
+    /// What FFmpeg should be handed.
+    pub fn location(&self) -> String {
+        match self {
+            Self::File { path } => path.display().to_string(),
+            Self::Url { url } => url.clone(),
+        }
+    }
+
+    /// Short label for the UI.
+    pub fn display(&self) -> String {
+        match self {
+            Self::File { path } => path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string()),
+            Self::Url { url } => url.clone(),
+        }
+    }
+
+    /// The local path, when this is a file.
+    pub fn path(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::File { path } => Some(path),
+            Self::Url { .. } => None,
+        }
+    }
+
+    /// A local file that has since moved breaks playback; a URL is assumed to
+    /// work until FFmpeg says otherwise.
+    pub fn exists(&self) -> bool {
+        match self {
+            Self::File { path } => path.exists(),
+            Self::Url { .. } => true,
+        }
+    }
+}
+
+/// One video on the canvas.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Layer {
+    pub id: String,
+    pub name: String,
+    pub role: Role,
+    pub source: MediaSource,
+
+    /// Duration in microseconds, filled in after probing.
+    #[serde(default)]
+    pub duration_us: i64,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+    /// Exact frame rate as a rational, straight from the container.
+    #[serde(default = "default_fps_num")]
+    pub fps_num: u32,
+    #[serde(default = "default_fps_den")]
+    pub fps_den: u32,
+    #[serde(default)]
+    pub has_audio: bool,
+    #[serde(default)]
+    pub audio_channels: u16,
+    #[serde(default)]
+    pub audio_rate: u32,
+
+    /// Higher is painted later, i.e. on top.
     pub z_index: i32,
-    /// Texture crop window.
-    #[serde(default)]
-    pub crop: CropRect,
-    /// Opacity in `0..=1`.
-    #[serde(default = "one")]
-    pub opacity: f32,
-    /// Hidden layers are not painted and not hit-tested.
-    #[serde(default)]
+    /// `target_pts_us = master_clock_us + offset_us`. Positive means this layer
+    /// shows later material of its own file at the same timeline time.
+    pub offset_us: i64,
+
+    #[serde(default = "default_true")]
     pub visible: bool,
-    /// Locked layers are not hit-tested or draggable, but still painted.
     #[serde(default)]
     pub locked: bool,
-    /// `target_pts_us = master_clock_us + offset_us` (positive = later media).
+
+    pub rect: NormRect,
     #[serde(default)]
-    pub offset_us: i64,
-    /// Per-track volume in `0..=2`.
-    #[serde(default = "one")]
+    pub crop: Crop,
+    #[serde(default = "default_opacity")]
+    pub opacity: f32,
+    #[serde(default = "default_fit")]
+    pub fit: FitMode,
+    /// Pixel aspect ratio to hold while resizing, when locked.
+    #[serde(default)]
+    pub aspect_lock: Option<f32>,
+
+    #[serde(default = "default_volume")]
     pub volume: f32,
-    /// Per-track mute.
     #[serde(default)]
     pub muted: bool,
-    /// Fit or fill inside the layer rectangle.
-    #[serde(default)]
-    pub fit: FitMode,
 }
 
-fn one() -> f32 {
+fn default_fps_num() -> u32 {
+    30
+}
+
+fn default_fps_den() -> u32 {
+    1
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_opacity() -> f32 {
     1.0
 }
 
-impl LayerConfig {
-    /// Create a layer with sensible defaults: visible, unlocked, unit opacity.
-    pub fn new(
-        id: u64,
-        label: impl Into<String>,
-        role: LayerRole,
-        source: impl Into<String>,
-        rect: NormalizedRect,
-        z_index: i32,
-    ) -> Self {
+fn default_volume() -> f32 {
+    1.0
+}
+
+fn default_fit() -> FitMode {
+    FitMode::Contain
+}
+
+impl Layer {
+    pub fn new(name: impl Into<String>, role: Role, source: MediaSource, rect: NormRect, z: i32) -> Self {
         Self {
-            id,
-            label: label.into(),
+            id: new_id("layer"),
+            name: name.into(),
             role,
-            source: source.into(),
-            rect,
-            z_index,
-            crop: CropRect::none(),
-            opacity: 1.0,
+            source,
+            duration_us: 0,
+            width: 0,
+            height: 0,
+            fps_num: 30,
+            fps_den: 1,
+            has_audio: false,
+            audio_channels: 0,
+            audio_rate: 0,
+            z_index: z,
+            offset_us: 0,
             visible: true,
             locked: false,
-            offset_us: 0,
+            rect,
+            crop: Crop::ZERO,
+            opacity: 1.0,
+            fit: FitMode::Contain,
+            aspect_lock: None,
             volume: 1.0,
             muted: false,
-            fit: FitMode::Fit,
         }
     }
 
-    /// Normalize persisted values that could be out of range.
-    pub fn sanitized(mut self) -> Self {
-        self.rect = self.rect.sanitized().clamped_to_canvas();
-        self.crop = self.crop.sanitized();
-        self.opacity = self.opacity.clamp(0.0, 1.0);
-        self.volume = self.volume.clamp(0.0, 2.0);
-        self
+    /// One frame, in microseconds.
+    pub fn frame_us(&self) -> i64 {
+        if self.fps_num == 0 {
+            return 33_333;
+        }
+        1_000_000 * i64::from(self.fps_den.max(1)) / i64::from(self.fps_num.max(1))
+    }
+
+    /// Where this layer starts on the union timeline.
+    pub fn start_us(&self) -> i64 {
+        -self.offset_us
+    }
+
+    /// Where it ends.
+    pub fn end_us(&self) -> i64 {
+        self.duration_us - self.offset_us
+    }
+
+    /// Whether the layer has footage at union time `t`.
+    pub fn is_active_at(&self, t_us: i64) -> bool {
+        t_us >= self.start_us() && t_us < self.end_us()
+    }
+
+    /// Source aspect ratio, falling back to 16:9 before probing.
+    pub fn source_aspect(&self) -> f32 {
+        if self.width == 0 || self.height == 0 {
+            return 16.0 / 9.0;
+        }
+        self.width as f32 / self.height as f32
+    }
+
+    /// The crop as a shader-ready UV rectangle.
+    pub fn uv_crop(&self) -> [f32; 4] {
+        self.crop.uv()
     }
 }
 
-/// A saved session.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A saved reaction session.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Session {
-    /// Schema version, always written.
     pub version: u32,
-    /// Stable identifier (also the file stem on disk).
     pub id: String,
-    /// Display name.
     pub name: String,
-    /// Canvas aspect.
-    pub aspect: CanvasAspect,
-    /// Layers (order is irrelevant; `z_index` is authoritative).
-    pub layers: Vec<LayerConfig>,
-    /// Which layer owns the master audio track.
-    pub master_audio_layer: Option<u64>,
-    /// Per-layer offsets linked to the master timeline.
+    pub canvas_aspect: CanvasAspect,
+    pub layers: Vec<Layer>,
+    /// The layer whose sound is the master, by id.
     #[serde(default)]
-    pub linked: bool,
-    /// Creation time, seconds since the Unix epoch.
-    pub created_unix: u64,
-    /// Last modification time, seconds since the Unix epoch.
-    pub modified_unix: u64,
-    /// Thumbnail file name inside the session data dir, if generated.
+    pub master_audio: Option<String>,
+    #[serde(default = "default_true")]
+    pub is_linked: bool,
+    /// Lend the master's audio to the topmost active layer when the master has
+    /// no footage at the current time.
+    #[serde(default = "default_true")]
+    pub keep_sound_going: bool,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+    /// File name of the thumbnail inside the data directory.
     #[serde(default)]
     pub thumbnail: Option<String>,
 }
 
 impl Session {
-    /// Create a new empty session.
-    pub fn new(id: impl Into<String>, name: impl Into<String>, aspect: CanvasAspect) -> Self {
-        let now = now_unix();
+    pub fn new(name: impl Into<String>) -> Self {
+        let now = now_ms();
         Self {
-            version: SCHEMA_VERSION,
-            id: id.into(),
+            version: SESSION_VERSION,
+            id: new_id("session"),
             name: name.into(),
-            aspect,
+            canvas_aspect: CanvasAspect::Ratio16x9,
             layers: Vec::new(),
-            master_audio_layer: None,
-            linked: true,
-            created_unix: now,
-            modified_unix: now,
+            master_audio: None,
+            is_linked: true,
+            keep_sound_going: true,
+            created_at: now,
+            updated_at: now,
             thumbnail: None,
         }
     }
 
-    /// Normalize z-indices to a dense `0..n-1` range, keeping relative order.
-    ///
-    /// The list is not reordered: only the `z_index` fields change. Ties are
-    /// broken by the current position in `layers`.
-    pub fn normalize_z(&mut self) {
-        let mut order: Vec<usize> = (0..self.layers.len()).collect();
-        order.sort_by_key(|&i| (self.layers[i].z_index, i));
-        for (rank, &i) in order.iter().enumerate() {
-            self.layers[i].z_index = rank as i32;
-        }
-    }
-
-    /// Layer indices sorted by ascending `z_index` (paint order).
-    pub fn paint_order(&self) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..self.layers.len()).collect();
-        order.sort_by_key(|&i| (self.layers[i].z_index, i));
-        order
-    }
-
-    /// Highest `z_index` layer that is visible, used for top-down hit-testing.
-    pub fn hit_order(&self) -> Vec<usize> {
-        let mut order = self.paint_order();
-        order.reverse();
-        order
-    }
-
-    /// Find a layer by id.
-    pub fn layer(&self, id: u64) -> Option<&LayerConfig> {
+    pub fn layer(&self, id: &str) -> Option<&Layer> {
         self.layers.iter().find(|l| l.id == id)
     }
 
-    /// Find a layer by id, mutably.
-    pub fn layer_mut(&mut self, id: u64) -> Option<&mut LayerConfig> {
-        self.layers.iter_mut().find(|l| l.id == id)
-    }
-
-    /// Index of a layer by id.
-    pub fn layer_index(&self, id: u64) -> Option<usize> {
+    pub fn layer_index(&self, id: &str) -> Option<usize> {
         self.layers.iter().position(|l| l.id == id)
     }
 
-    /// Next unused layer id.
-    pub fn next_layer_id(&self) -> u64 {
-        self.layers.iter().map(|l| l.id).max().unwrap_or(0) + 1
+    pub fn layer_mut(&mut self, id: &str) -> Option<&mut Layer> {
+        self.layers.iter_mut().find(|l| l.id == id)
     }
 
-    /// Bring `id` to the front (topmost).
-    ///
-    /// Returns true when the layer actually moved, so callers can skip a
-    /// pointless save.
-    pub fn bring_to_front(&mut self, id: u64) -> bool {
-        let Some(idx) = self.layer_index(id) else {
-            return false;
-        };
-        self.normalize_z();
-        // Already the topmost? Then there is nothing to save.
-        if let Some(&top_i) = self.paint_order().last()
-            && top_i == idx
-        {
-            return false;
-        }
-        let top = self
-            .layers
-            .iter()
-            .map(|l| l.z_index)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
-        self.layers[idx].z_index = top;
-        self.normalize_z();
-        true
+    /// Indices of layers in paint order: strictly ascending `z_index`, ties
+    /// broken by insertion order so the result is deterministic.
+    pub fn paint_order(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.layers.len()).collect();
+        order.sort_by_key(|i| (self.layers[*i].z_index, *i));
+        order
     }
 
-    /// Send `id` to the back (bottom-most). Returns true if moved.
-    pub fn send_to_back(&mut self, id: u64) -> bool {
-        let Some(idx) = self.layer_index(id) else {
-            return false;
-        };
-        self.normalize_z();
-        if let Some(&bottom_i) = self.paint_order().first()
-            && bottom_i == idx
-        {
-            return false;
-        }
-        let bottom = self
-            .layers
-            .iter()
-            .map(|l| l.z_index)
-            .min()
-            .unwrap_or(0)
-            .saturating_sub(1);
-        self.layers[idx].z_index = bottom;
-        self.normalize_z();
-        true
+    /// Topmost visible, unlocked layer under `p`, or `None`.
+    pub fn hit_test(&self, p: Point) -> Option<usize> {
+        let mut order = self.paint_order();
+        order.reverse();
+        order
+            .into_iter()
+            .find(|i| {
+                let layer = &self.layers[*i];
+                layer.visible && !layer.locked && layer.rect.contains(p)
+            })
     }
 
-    /// Move `id` one step forward (towards the front). Returns true if moved.
-    pub fn bring_forward(&mut self, id: u64) -> bool {
-        self.swap_with_neighbour(id, true)
-    }
-
-    /// Move `id` one step backward (towards the back). Returns true if moved.
-    pub fn send_backward(&mut self, id: u64) -> bool {
-        self.swap_with_neighbour(id, false)
-    }
-
-    fn swap_with_neighbour(&mut self, id: u64, forward: bool) -> bool {
-        let Some(idx) = self.layer_index(id) else {
-            return false;
-        };
-        self.normalize_z();
-        let z = self.layers[idx].z_index;
-        let target_z = if forward { z + 1 } else { z - 1 };
-        let Some(other) = self.layers.iter().position(|l| l.z_index == target_z) else {
-            return false;
-        };
-        self.layers[idx].z_index = target_z;
-        self.layers[other].z_index = z;
-        self.normalize_z();
-        true
-    }
-
-    /// Top-most visible, unlocked layer at normalized canvas point `(x, y)`.
-    ///
-    /// Hit-testing runs strictly descending by z-index and skips hidden and
-    /// locked layers.
-    pub fn hit_test(&self, x: f32, y: f32) -> Option<u64> {
-        for i in self.hit_order() {
-            let l = &self.layers[i];
-            if !l.visible || l.locked {
-                continue;
-            }
-            if l.rect.contains(x, y) {
-                return Some(l.id);
-            }
-        }
-        None
-    }
-
-    /// Move a layer to a new position in the ordered list for drag-and-drop
-    /// reordering in the Layers panel.
-    ///
-    /// `from_slot` and `to_slot` are positions in *paint order* (0 = back).
-    pub fn reorder_slots(&mut self, from_slot: usize, to_slot: usize) {
-        self.normalize_z();
+    /// Rewrite `z_index` as a dense `0..n-1` range, preserving relative order.
+    pub fn normalize_z(&mut self) {
         let order = self.paint_order();
-        if from_slot >= order.len() || to_slot >= order.len() {
+        for (z, i) in order.into_iter().enumerate() {
+            self.layers[i].z_index = z as i32;
+        }
+    }
+
+    pub fn z_of(&self, id: &str) -> Option<i32> {
+        self.layer(id).map(|l| l.z_index)
+    }
+
+    /// Move a layer to the top of the stack.
+    pub fn bring_to_front(&mut self, id: &str) {
+        if let Some(i) = self.layer_index(id) {
+            let top = self.layers.iter().map(|l| l.z_index).max().unwrap_or(0);
+            self.layers[i].z_index = top + 1;
+            self.normalize_z();
+        }
+    }
+
+    pub fn send_to_back(&mut self, id: &str) {
+        if let Some(i) = self.layer_index(id) {
+            let bottom = self.layers.iter().map(|l| l.z_index).min().unwrap_or(0);
+            self.layers[i].z_index = bottom - 1;
+            self.normalize_z();
+        }
+    }
+
+    /// One step up. A no-op when the layer is already on top.
+    pub fn bring_forward(&mut self, id: &str) {
+        let order = self.paint_order();
+        let Some(pos) = order.iter().position(|i| self.layers[*i].id == id) else {
+            return;
+        };
+        if pos + 1 >= order.len() {
             return;
         }
-        let moving = order[from_slot];
-        let mut seq: Vec<usize> = order
-            .iter()
-            .copied()
-            .filter(|&i| i != moving)
-            .collect();
-        seq.insert(to_slot.min(seq.len()), moving);
-        for (rank, &i) in seq.iter().enumerate() {
-            self.layers[i].z_index = rank as i32;
+        let above = order[pos + 1];
+        let me = order[pos];
+        // Swap z so the pair exchanges places, then re-densify.
+        let a = self.layers[me].z_index;
+        let b = self.layers[above].z_index;
+        if a == b {
+            self.layers[above].z_index = b + 1;
+        } else {
+            self.layers[me].z_index = b;
+            self.layers[above].z_index = a;
         }
         self.normalize_z();
     }
 
-    /// Fix up invariants after loading: dense z-indices, sanitized geometry,
-    /// a valid master audio layer.
-    pub fn sanitize(&mut self) {
-        self.layers = std::mem::take(&mut self.layers)
+    /// One step down. A no-op when the layer is already at the bottom.
+    pub fn send_backward(&mut self, id: &str) {
+        let order = self.paint_order();
+        let Some(pos) = order.iter().position(|i| self.layers[*i].id == id) else {
+            return;
+        };
+        if pos == 0 {
+            return;
+        }
+        let below = order[pos - 1];
+        let me = order[pos];
+        let a = self.layers[me].z_index;
+        let b = self.layers[below].z_index;
+        if a == b {
+            self.layers[below].z_index = b - 1;
+        } else {
+            self.layers[me].z_index = b;
+            self.layers[below].z_index = a;
+        }
+        self.normalize_z();
+    }
+
+    /// The layers with footage at union time `t`, topmost first.
+    pub fn active_at(&self, t_us: i64) -> Vec<usize> {
+        let mut order = self.paint_order();
+        order.reverse();
+        order
             .into_iter()
-            .map(LayerConfig::sanitized)
-            .collect();
-        self.normalize_z();
-        if let Some(master) = self.master_audio_layer
-            && self.layer(master).is_none()
-        {
-            self.master_audio_layer = None;
-        }
-        if self.master_audio_layer.is_none() {
-            self.master_audio_layer = self
-                .layers
-                .iter()
-                .min_by_key(|l| l.z_index)
-                .map(|l| l.id);
+            .filter(|i| self.layers[*i].is_active_at(t_us))
+            .collect()
+    }
+
+    /// The layer that should carry the master's sound at `t` when the master
+    /// itself has no footage: the highest active layer.
+    pub fn lend_master(&self, t_us: i64) -> Option<&Layer> {
+        self.active_at(t_us)
+            .into_iter()
+            .map(|i| &self.layers[i])
+            .find(|l| l.has_audio)
+    }
+
+    /// The master audio layer, if it still exists.
+    pub fn master(&self) -> Option<&Layer> {
+        self.master_audio
+            .as_deref()
+            .and_then(|id| self.layer(id))
+            .or_else(|| self.default_master())
+    }
+
+    /// Source first, then the first layer that has audio.
+    pub fn default_master(&self) -> Option<&Layer> {
+        self.layers
+            .iter()
+            .find(|l| l.role == Role::Source && l.has_audio)
+            .or_else(|| self.layers.iter().find(|l| l.has_audio))
+    }
+
+    /// The whole union timeline.
+    pub fn union(&self) -> timeline::Union {
+        timeline::union_of(&self.layers)
+    }
+
+    /// Layers whose media file is gone.
+    pub fn missing_media(&self) -> Vec<usize> {
+        (0..self.layers.len())
+            .filter(|i| !self.layers[*i].source.exists())
+            .collect()
+    }
+
+    /// Point a layer at a new file, keeping its offset and geometry.
+    pub fn relink(&mut self, id: &str, source: MediaSource) -> bool {
+        match self.layer_mut(id) {
+            Some(layer) => {
+                layer.source = source;
+                true
+            }
+            None => false,
         }
     }
 
-    /// Thumbnail path relative to the session's data directory.
-    pub fn thumbnail_file(&self) -> String {
-        format!("{}.png", self.id)
-    }
-
-    /// A short summary for session cards.
-    pub fn summary(&self) -> SessionSummary {
-        SessionSummary {
-            id: self.id.clone(),
-            name: self.name.clone(),
-            layer_count: self.layers.len(),
-            modified_unix: self.modified_unix,
-            thumbnail: self.thumbnail.clone(),
+    /// Copy of this session with fresh ids so it can be edited independently.
+    pub fn duplicated(&self) -> Self {
+        let mut copy = self.clone();
+        copy.id = new_id("session");
+        copy.name = format!("{} copy", self.name);
+        copy.created_at = now_ms();
+        copy.updated_at = copy.created_at;
+        copy.thumbnail = None;
+        let mut master_index = None;
+        for (i, layer) in copy.layers.iter_mut().enumerate() {
+            let old = layer.id.clone();
+            layer.id = new_id("layer");
+            if self.master_audio.as_deref() == Some(old.as_str()) {
+                master_index = Some(i);
+            }
         }
+        copy.master_audio = master_index.map(|i| copy.layers[i].id.clone());
+        copy
     }
-}
 
-/// Lightweight description of a session for the session browser.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SessionSummary {
-    /// Session id (file stem).
-    pub id: String,
-    /// Display name.
-    pub name: String,
-    /// Number of layers.
-    pub layer_count: usize,
-    /// Last modification time.
-    pub modified_unix: u64,
-    /// Thumbnail file name, if any.
-    pub thumbnail: Option<String>,
-}
+    /// Bump the modification time; called before every save.
+    pub fn touch(&mut self) {
+        self.updated_at = now_ms();
+    }
 
-/// Current Unix time in seconds.
-pub fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    /// The canvas rectangle for an available area.
+    pub fn canvas_size(&self, available: Size) -> Size {
+        self.canvas_aspect.size_in(available)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn sample_session() -> Session {
-        let mut s = Session::new("s1", "Test", CanvasAspect::Widescreen);
-        s.layers.push(LayerConfig::new(
-            1,
-            "Source",
-            LayerRole::Source,
-            "/tmp/a.mp4",
-            NormalizedRect::new(0.0, 0.0, 0.5, 1.0),
-            0,
-        ));
-        s.layers.push(LayerConfig::new(
-            2,
-            "Reaction 1",
-            LayerRole::Reaction1,
-            "/tmp/b.mp4",
-            NormalizedRect::new(0.5, 0.0, 0.5, 1.0),
-            1,
-        ));
-        s.layers.push(LayerConfig::new(
-            3,
-            "PiP",
-            LayerRole::Reaction2,
-            "/tmp/c.mp4",
-            NormalizedRect::new(0.6, 0.6, 0.3, 0.3),
-            2,
-        ));
-        s
+    fn layer(name: &str, z: i32) -> Layer {
+        Layer::new(
+            name,
+            Role::Reaction,
+            MediaSource::file(format!("/tmp/{name}.mp4")),
+            NormRect::FULL,
+            z,
+        )
     }
 
     #[test]
-    fn z_indices_normalize_densely() {
-        let mut s = sample_session();
-        s.layers[1].z_index = 10;
-        s.layers[2].z_index = 20;
-        s.normalize_z();
-        let mut zs: Vec<i32> = s.layers.iter().map(|l| l.z_index).collect();
-        zs.sort();
-        assert_eq!(zs, vec![0, 1, 2]);
-        // Relative order preserved: layer 1 stays bottom.
-        assert_eq!(s.layer(1).unwrap().z_index, 0);
-        assert_eq!(s.layer(2).unwrap().z_index, 1);
-        assert_eq!(s.layer(3).unwrap().z_index, 2);
-    }
-
-    #[test]
-    fn paint_order_is_ascending_and_hit_order_descending() {
-        let mut s = sample_session();
-        s.bring_to_front(1);
-        let paint: Vec<u64> = s.paint_order().iter().map(|&i| s.layers[i].id).collect();
-        let hit: Vec<u64> = s.hit_order().iter().map(|&i| s.layers[i].id).collect();
-        assert_eq!(paint, vec![2, 3, 1]);
-        let mut rev = paint.clone();
-        rev.reverse();
-        assert_eq!(hit, rev);
-    }
-
-    #[test]
-    fn hit_test_returns_topmost_overlapping_layer() {
-        let mut s = sample_session();
-        // Point inside the PiP (layer 3) which also sits over layer 2 & 1? It does not;
-        // layer 3 covers 0.6..0.9 x 0.6..0.9 which is inside layer 2.
-        assert_eq!(s.hit_test(0.7, 0.7), Some(3));
-        s.send_to_back(3);
-        assert_eq!(s.hit_test(0.7, 0.7), Some(2));
+    fn paint_order_is_ascending_and_hit_test_descending() {
+        let mut s = Session::new("t");
+        s.layers.push(layer("a", 0));
+        s.layers.push(layer("b", 2));
+        s.layers.push(layer("c", 1));
+        let names: Vec<&str> = s
+            .paint_order()
+            .into_iter()
+            .map(|i| s.layers[i].name.as_str())
+            .collect();
+        assert_eq!(names, ["a", "c", "b"]);
+        // All three cover the whole canvas: the topmost wins.
+        let hit = s.hit_test(Point { x: 0.5, y: 0.5 }).unwrap();
+        assert_eq!(s.layers[hit].name, "b");
     }
 
     #[test]
     fn hit_test_skips_hidden_and_locked_layers() {
-        let mut s = sample_session();
-        s.layer_mut(3).unwrap().visible = false;
-        assert_eq!(s.hit_test(0.7, 0.7), Some(2));
-        s.layer_mut(3).unwrap().visible = true;
-        s.layer_mut(3).unwrap().locked = true;
-        assert_eq!(s.hit_test(0.7, 0.7), Some(2));
-        s.layer_mut(2).unwrap().locked = true;
-        // Only layer 1 covers it now (0..0.5 x) -- it does not, so None.
-        assert_eq!(s.hit_test(0.7, 0.7), None);
+        let mut s = Session::new("t");
+        s.layers.push(layer("bottom", 0));
+        s.layers.push(layer("top", 1));
+        s.layers[1].visible = false;
+        assert_eq!(s.layers[s.hit_test(Point { x: 0.5, y: 0.5 }).unwrap()].name, "bottom");
+        s.layers[1].visible = true;
+        s.layers[1].locked = true;
+        assert_eq!(s.layers[s.hit_test(Point { x: 0.5, y: 0.5 }).unwrap()].name, "bottom");
+        s.layers[1].locked = false;
+        assert_eq!(s.layers[s.hit_test(Point { x: 0.5, y: 0.5 }).unwrap()].name, "top");
+        assert!(s.hit_test(Point { x: 4.0, y: 4.0 }).is_none());
     }
 
     #[test]
-    fn bring_and_send_walk_the_stack() {
-        let mut s = sample_session();
-        s.bring_forward(1);
-        assert_eq!(s.layer(1).unwrap().z_index, 1);
-        s.send_backward(1);
-        assert_eq!(s.layer(1).unwrap().z_index, 0);
-        s.send_to_back(1);
-        assert_eq!(s.layer(1).unwrap().z_index, 0);
-        s.bring_to_front(1);
-        assert_eq!(s.layer(1).unwrap().z_index, 2);
+    fn reordering_normalizes_to_a_dense_range() {
+        let mut s = Session::new("t");
+        for (i, name) in ["a", "b", "c", "d"].iter().enumerate() {
+            s.layers.push(layer(name, (i as i32) * 10));
+        }
+        s.normalize_z();
+        assert_eq!(
+            s.layers.iter().map(|l| l.z_index).collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+
+        let id = s.layers[1].id.clone();
+        s.bring_to_front(&id);
+        assert_eq!(s.z_of(&id), Some(3));
+        assert_eq!(
+            s.paint_order()
+                .into_iter()
+                .map(|i| s.layers[i].name.clone())
+                .collect::<Vec<_>>(),
+            ["a", "c", "d", "b"]
+        );
+
+        s.send_to_back(&id);
+        assert_eq!(s.z_of(&id), Some(0));
+
+        s.bring_forward(&id);
+        assert_eq!(s.z_of(&id), Some(1));
+        s.send_backward(&id);
+        assert_eq!(s.z_of(&id), Some(0));
+        // Already at the bottom: stays put.
+        s.send_backward(&id);
+        assert_eq!(s.z_of(&id), Some(0));
     }
 
     #[test]
-    fn reorder_slots_moves_a_layer() {
-        let mut s = sample_session();
-        // Paint order [1, 2, 3]; move slot 0 (layer 1) to slot 2.
-        s.reorder_slots(0, 2);
-        assert_eq!(s.layer(1).unwrap().z_index, 2);
-        assert_eq!(s.layer(2).unwrap().z_index, 0);
-        assert_eq!(s.layer(3).unwrap().z_index, 1);
+    fn bring_forward_is_a_no_op_at_the_top() {
+        let mut s = Session::new("t");
+        s.layers.push(layer("a", 0));
+        s.layers.push(layer("b", 1));
+        let top = s.layers[1].id.clone();
+        s.bring_forward(&top);
+        assert_eq!(s.z_of(&top), Some(1));
     }
 
     #[test]
-    fn sanitize_repairs_master_audio_and_geometry() {
-        let mut s = sample_session();
-        s.master_audio_layer = Some(99);
-        s.layers[0].opacity = 5.0;
-        s.layers[0].rect = NormalizedRect::new(f32::NAN, 0.0, 1.0, 1.0);
-        s.sanitize();
-        assert_eq!(s.master_audio_layer, Some(1));
-        assert_eq!(s.layers[0].opacity, 1.0);
-        assert_eq!(s.layers[0].rect, NormalizedRect::full());
+    fn offsets_move_the_layer_on_the_union_timeline() {
+        let mut l = layer("a", 0);
+        l.duration_us = 10_000_000;
+        assert_eq!(l.start_us(), 0);
+        assert_eq!(l.end_us(), 10_000_000);
+        l.offset_us = 1_500_000;
+        assert_eq!(l.start_us(), -1_500_000);
+        assert_eq!(l.end_us(), 8_500_000);
+        assert!(l.is_active_at(0));
+        assert!(!l.is_active_at(-1_600_000));
     }
 
     #[test]
-    fn session_json_round_trip() {
-        let s = sample_session();
-        let json = serde_json::to_string_pretty(&s).unwrap();
-        assert!(json.contains("\"version\": 1"));
-        let back: Session = serde_json::from_str(&json).unwrap();
-        assert_eq!(s, back);
+    fn master_falls_back_to_the_first_layer_with_audio() {
+        let mut s = Session::new("t");
+        let mut a = layer("a", 0);
+        a.role = Role::Source;
+        a.has_audio = false;
+        let mut b = layer("b", 1);
+        b.has_audio = true;
+        s.layers.push(a);
+        s.layers.push(b);
+        assert_eq!(s.default_master().map(|l| l.name.clone()), Some("b".into()));
+        s.master_audio = Some(s.layers[0].id.clone());
+        assert_eq!(s.master().map(|l| l.name.clone()), Some("a".into()));
+        s.master_audio = Some("gone".into());
+        assert_eq!(s.master().map(|l| l.name.clone()), Some("b".into()));
     }
 
     #[test]
-    fn missing_optional_fields_get_defaults() {
-        let json = r#"{
-            "version": 1,
-            "id": "x",
-            "name": "X",
-            "aspect": "Widescreen",
-            "layers": [{
-                "id": 1, "label": "A", "role": "Source", "source": "/a.mp4",
-                "rect": {"x":0.0,"y":0.0,"w":1.0,"h":1.0}, "z_index": 0,
-                "opacity": 1.0, "visible": true
-            }],
-            "master_audio_layer": 1,
-            "linked": true,
-            "created_unix": 0, "modified_unix": 0
-        }"#;
-        let s: Session = serde_json::from_str(json).unwrap();
-        assert_eq!(s.layers[0].crop, CropRect::none());
-        assert!(!s.layers[0].muted);
-        assert_eq!(s.layers[0].offset_us, 0);
-        assert_eq!(s.layers[0].fit, FitMode::Fit);
-        assert!(s.thumbnail.is_none());
+    fn duplicate_regenerates_ids_and_keeps_the_master() {
+        let mut s = Session::new("original");
+        let mut a = layer("a", 0);
+        a.has_audio = true;
+        s.layers.push(a);
+        s.master_audio = Some(s.layers[0].id.clone());
+        let copy = s.duplicated();
+        assert_ne!(copy.id, s.id);
+        assert_ne!(copy.layers[0].id, s.layers[0].id);
+        assert_eq!(copy.master_audio.as_deref(), Some(copy.layers[0].id.as_str()));
+        assert_eq!(copy.name, "original copy");
     }
 
     #[test]
-    fn next_layer_id_skips_used_ids() {
-        let s = sample_session();
-        assert_eq!(s.next_layer_id(), 4);
+    fn canvas_aspect_fits_the_available_area() {
+        let avail = Size::new(1000.0, 1000.0);
+        let s = CanvasAspect::Ratio16x9.size_in(avail);
+        assert!((s.w - 1000.0).abs() < 0.01);
+        assert!((s.h - 562.5).abs() < 0.01);
+        let tall = CanvasAspect::Ratio9x16.size_in(avail);
+        assert!((tall.h - 1000.0).abs() < 0.01);
+        assert!((tall.w - 562.5).abs() < 0.01);
+        assert_eq!(CanvasAspect::Fill.size_in(avail), avail);
+        assert_eq!(CanvasAspect::Fill.ratio(), None);
     }
 
     #[test]
-    fn summary_counts_layers() {
-        let mut s = sample_session();
-        s.sanitize();
-        let sum = s.summary();
-        assert_eq!(sum.layer_count, 3);
-        assert_eq!(sum.id, "s1");
+    fn lensed_audio_goes_to_the_topmost_active_layer() {
+        let mut s = Session::new("t");
+        let mut low = layer("low", 0);
+        low.has_audio = true;
+        low.duration_us = 10_000_000;
+        let mut high = layer("high", 5);
+        high.has_audio = true;
+        high.duration_us = 10_000_000;
+        let mut silent = layer("silent", 9);
+        silent.duration_us = 10_000_000;
+        s.layers.push(low);
+        s.layers.push(high);
+        s.layers.push(silent);
+        assert_eq!(s.lend_master(1_000_000).map(|l| l.name.clone()), Some("high".into()));
     }
 }

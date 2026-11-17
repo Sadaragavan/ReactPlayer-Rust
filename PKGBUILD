@@ -28,9 +28,11 @@ license=('MIT OR Apache-2.0')
 # Runtime: the shared libraries the binary links against. The dev packages are
 # only needed to build and are listed in makedepends.
 depends=(
+    'alsa-lib'
     'ffmpeg'
     'gcc-libs'
     'glibc'
+    'libva'
     'libx11'
     'libxcursor'
     'libxi'
@@ -38,6 +40,15 @@ depends=(
     'libxrandr'
     'vulkan-icd-loader'
     'wayland'
+)
+# The drivers themselves are the user's choice: VA-API on Intel/AMD, VDPAU or
+# Vulkan video on NVIDIA. Without one of them playback still works, in software,
+# and the layer badge says so.
+optdepends=(
+    'mesa: VA-API and Vulkan drivers for Intel and AMD GPUs'
+    'intel-media-driver: VA-API on Intel Gen8 and newer'
+    'libva-intel-driver: VA-API on older Intel GPUs'
+    'nvidia-utils: VDPAU and Vulkan video on NVIDIA'
 )
 # Build: Rust toolchain, a C toolchain for bindgen, pkg-config to find FFmpeg,
 # and clang because ffmpeg-sys-next generates bindings at build time.
