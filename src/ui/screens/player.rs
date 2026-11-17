@@ -119,8 +119,8 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui) {
                     let response = ui.label(RichText::new(name).color(theme::TEXT).size(14.0));
                     if response.double_clicked()
                         && let Some(session) = app.session.as_ref() {
-                            app.renaming = Some((session.id.clone(), session.name.clone()));
-                        }
+                        app.renaming = Some((session.id.clone(), session.name.clone()));
+                    }
                 }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -203,10 +203,11 @@ fn canvas(app: &mut App, ui: &mut egui::Ui) {
                 .map(|pos| to_norm(rect, pos));
             if response.clicked_by(PointerButton::Secondary)
                 && let (Some(session), Some(point)) = (app.session.as_ref(), point)
-                    && let Some(index) = session.hit_test(point) {
-                        let id = session.layers[index].id.clone();
-                        app.select(&id);
-                    }
+                && let Some(index) = session.hit_test(point)
+            {
+                let id = session.layers[index].id.clone();
+                app.select(&id);
+            }
             let _ = response.context_menu(|ui| context_menu(app, ui));
         });
 }
@@ -234,37 +235,38 @@ fn interact(
             let box_px = layer.rect.to_px(canvas_size);
             if !layer.locked
                 && let Some(handle) = hit_handle(box_px, to_px_point(rect, pointer), 10.0) {
+                app.canvas.drag = Some(DragState {
+                    layer: layer.id.clone(),
+                    handle: Some(handle),
+                    start_rect: layer.rect,
+                    start: local,
+                    moved: false,
+                });
+                started = true;
+            }
+        }
+        if !started
+            && let Some(session) = app.session.as_ref()
+        {
+            if let Some(index) = session.hit_test(local) {
+                let layer = &session.layers[index];
+                let id = layer.id.clone();
+                let start_rect = layer.rect;
+                let drag_locked = layer.locked;
+                app.select(&id);
+                if !drag_locked {
                     app.canvas.drag = Some(DragState {
-                        layer: layer.id.clone(),
-                        handle: Some(handle),
-                        start_rect: layer.rect,
+                        layer: id,
+                        handle: None,
+                        start_rect,
                         start: local,
                         moved: false,
                     });
-                    started = true;
                 }
-        }
-        if !started
-            && let Some(session) = app.session.as_ref() {
-                if let Some(index) = session.hit_test(local) {
-                    let layer = &session.layers[index];
-                    let id = layer.id.clone();
-                    let start_rect = layer.rect;
-                    let drag_locked = layer.locked;
-                    app.select(&id);
-                    if !drag_locked {
-                        app.canvas.drag = Some(DragState {
-                            layer: id,
-                            handle: None,
-                            start_rect,
-                            start: local,
-                            moved: false,
-                        });
-                    }
-                } else {
-                    app.selection = None;
-                }
+            } else {
+                app.selection = None;
             }
+        }
     }
 
     if response.dragged_by(PointerButton::Primary) {
@@ -327,8 +329,8 @@ fn interact(
         app.canvas.guides_y = guides.1;
         if let Some(session) = app.session.as_mut()
             && let Some(layer) = session.layer_mut(&layer_id) {
-                layer.rect = new_rect;
-            }
+            layer.rect = new_rect;
+        }
         if let Some(drag) = app.canvas.drag.as_mut() {
             drag.moved = true;
         }
@@ -347,20 +349,23 @@ fn interact(
     // Double click on a layer brings it forward one step.
     if response.double_clicked_by(PointerButton::Primary)
         && let Some(session) = app.session.as_mut()
-            && let Some(index) = session.hit_test(local) {
-                let id = session.layers[index].id.clone();
-                session.bring_forward(&id);
-                session.touch();
-                app.selection = Some(id);
-            }
+        && let Some(index) = session.hit_test(local)
+    {
+        let id = session.layers[index].id.clone();
+        session.bring_forward(&id);
+        session.touch();
+        app.selection = Some(id);
+    }
 
     // A click without a drag selects.
-    if response.clicked_by(PointerButton::Primary) && app.canvas.drag.is_none()
+    if response.clicked_by(PointerButton::Primary)
+        && app.canvas.drag.is_none()
         && let Some(session) = app.session.as_ref()
-            && let Some(index) = session.hit_test(local) {
-                let id = session.layers[index].id.clone();
-                app.select(&id);
-            }
+        && let Some(index) = session.hit_test(local)
+    {
+        let id = session.layers[index].id.clone();
+        app.select(&id);
+    }
 }
 
 /// Build and submit the compositor callbacks for this frame.
@@ -596,14 +601,14 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui) {
     widgets::percent(ui, "Bottom", &mut crop.bottom);
     if crop != before
         && let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
-            layer.crop = crop;
-        }
+        layer.crop = crop;
+    }
     ui.separator();
 
     if widgets::percent(ui, "Opacity", &mut opacity).changed()
         && let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
-            layer.opacity = opacity;
-        }
+        layer.opacity = opacity;
+    }
 
     if ui.button(format!("Fit: {}", fit.label())).clicked() {
         fit = fit.toggled();
@@ -834,8 +839,8 @@ fn transport(app: &mut App, ui: &mut egui::Ui, theater: bool) {
                         .on_hover_text("Link the timelines (L)")
                         .clicked()
                         && let Some(session) = app.session.as_mut() {
-                            session.is_linked = !session.is_linked;
-                        }
+                        session.is_linked = !session.is_linked;
+                    }
                     // Master volume.
                     let mut volume = app
                         .session
@@ -845,11 +850,11 @@ fn transport(app: &mut App, ui: &mut egui::Ui, theater: bool) {
                         .unwrap_or(1.0);
                     if widgets::slider(ui, "Vol", &mut volume, 0.0..=1.0, "").changed()
                         && let Some(session) = app.session.as_mut() {
-                            let id = session.master().map(|layer| layer.id.clone());
-                            if let Some(layer) = id.and_then(|id| session.layer_mut(&id)) {
-                                layer.volume = volume;
-                            }
+                        let id = session.master().map(|layer| layer.id.clone());
+                        if let Some(layer) = id.and_then(|id| session.layer_mut(&id)) {
+                            layer.volume = volume;
                         }
+                    }
                     // Hardware badge for the selected layer.
                     if let Some(layer) = app.selected_layer() {
                         let backend = app
@@ -1025,9 +1030,9 @@ fn layers_panel(app: &mut App, ui: &mut egui::Ui) {
                                                         .session
                                                         .as_mut()
                                                         .and_then(|s| s.layer_mut(&id))
-                                                    {
-                                                        layer.visible = !layer.visible;
-                                                    }
+                                                {
+                                                    layer.visible = !layer.visible;
+                                                }
                                                 if ui
                                                     .small_button(if locked { "🔒" } else { "🔓" })
                                                     .on_hover_text("Lock this layer")
@@ -1036,9 +1041,9 @@ fn layers_panel(app: &mut App, ui: &mut egui::Ui) {
                                                         .session
                                                         .as_mut()
                                                         .and_then(|s| s.layer_mut(&id))
-                                                    {
-                                                        layer.locked = !layer.locked;
-                                                    }
+                                                {
+                                                    layer.locked = !layer.locked;
+                                                }
                                             },
                                         );
                                     });

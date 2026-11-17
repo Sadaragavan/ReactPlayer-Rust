@@ -361,9 +361,9 @@ impl Compositor {
         };
         if stale
             && let Some(source) = self.sources.get_mut(&id) {
-                upload_source(queue, source, frame);
-                source.pts_us = frame.pts_us;
-            }
+            upload_source(queue, source, frame);
+            source.pts_us = frame.pts_us;
+        }
         self.sources.get(&id).map(|s| s.generation).unwrap_or(0)
     }
 

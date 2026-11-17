@@ -232,8 +232,8 @@ impl App {
         // Continue where the last run left off, on the home screen.
         if let Some(id) = app.settings.last_session.clone()
             && let Ok(session) = app.store.load_session(&id) {
-                app.open_session(session, &cc.egui_ctx);
-            }
+            app.open_session(session, &cc.egui_ctx);
+        }
         app
     }
 
@@ -244,8 +244,8 @@ impl App {
             self.save_current();
             if let Some(runtime) = self.runtime.as_mut()
                 && let Some(session) = self.session.as_ref() {
-                    runtime.stop(session);
-                }
+                runtime.stop(session);
+            }
         }
         self.screen = screen;
         if screen == Screen::Sessions {
@@ -309,8 +309,8 @@ impl App {
     pub fn open_session(&mut self, mut session: Session, _ctx: &egui::Context) {
         if let Some(runtime) = self.runtime.as_mut()
             && let Some(previous) = self.session.as_ref() {
-                runtime.stop(previous);
-            }
+            runtime.stop(previous);
+        }
         session.normalize_z();
         if session.master_audio.is_none() {
             session.master_audio = session.default_master().map(|layer| layer.id.clone());
@@ -856,14 +856,14 @@ impl App {
                         .or_else(|| session.layers.first().map(|layer| layer.id.clone()));
                     if let Some(id) = master
                         && let Some(layer) = session.layer_mut(&id) {
-                            layer.muted = !layer.muted;
-                            let muted = layer.muted;
-                            self.toasts.info(if muted {
-                                "Master audio muted."
-                            } else {
-                                "Master audio on."
-                            });
-                        }
+                        layer.muted = !layer.muted;
+                        let muted = layer.muted;
+                        self.toasts.info(if muted {
+                            "Master audio muted."
+                        } else {
+                            "Master audio on."
+                        });
+                    }
                 }
             }
             Action::ToggleLayers => self.layers_panel = !self.layers_panel,
@@ -1211,10 +1211,10 @@ impl App {
                     &["mp4", "mkv", "mov", "webm", "avi", "m4v", "ts", "m2ts"],
                 )
                 .pick_files()
-            {
-                self.new_session.files.extend(files);
-                self.new_session.error = None;
-            }
+        {
+            self.new_session.files.extend(files);
+            self.new_session.error = None;
+        }
         if start {
             self.start_session(ctx);
         }

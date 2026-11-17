@@ -217,8 +217,8 @@ impl Runtime {
             let keep = ids.iter().any(|kept| kept == id);
             if !keep
                 && let Some(slot) = self.slots.remove(id) {
-                    self.used_slots[slot] = false;
-                }
+                self.used_slots[slot] = false;
+            }
             keep
         });
 
@@ -341,8 +341,8 @@ impl Runtime {
         for layer in &session.layers {
             if let Some(state) = self.layers.get(&layer.id)
                 && let Some(track) = &state.track {
-                    track.try_send(Command::Pause);
-                }
+                track.try_send(Command::Pause);
+            }
         }
         self.audio.silence_all();
     }
@@ -437,12 +437,13 @@ impl Runtime {
             };
             if steps < 0
                 && let Some(shared) = &state.shared
-                    && let Some(frame) = shared.frame_before(state.presented_us, frame_us) {
-                        state.presented_us = frame.pts_us;
-                        state.presented = Some(frame);
-                        state.pending = None;
-                        continue;
-                    }
+                && let Some(frame) = shared.frame_before(state.presented_us, frame_us)
+            {
+                state.presented_us = frame.pts_us;
+                state.presented = Some(frame);
+                state.pending = None;
+                continue;
+            }
             if let Some(track) = &state.track {
                 track.try_send(Command::Step { delta: steps });
             }
@@ -497,9 +498,9 @@ impl Runtime {
             let now = Instant::now();
             if state.unlinked_playing
                 && let Some(last) = state.unlinked_last_tick {
-                    let elapsed = now.saturating_duration_since(last).as_micros() as i64;
-                    state.unlinked_us = (state.unlinked_us + elapsed).min(duration - 1);
-                }
+                let elapsed = now.saturating_duration_since(last).as_micros() as i64;
+                state.unlinked_us = (state.unlinked_us + elapsed).min(duration - 1);
+            }
             state.unlinked_last_tick = Some(now);
             state.unlinked_us + layer.offset_us
         };
