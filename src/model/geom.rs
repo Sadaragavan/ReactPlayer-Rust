@@ -1,567 +1,661 @@
-//! Geometry primitives that are stored in sessions and presets.
+//! Canvas geometry: normalized rectangles, crop, resize handles and snapping.
 //!
-//! Layer rectangles are stored **normalized** (`0..1` in canvas space) so that
-//! a layout stays pixel-exact across window resizes and across aspect ratios.
+//! Layer rectangles are stored as fractions of the canvas (`0..1`), never as
+//! pixels, so a layout survives a window resize, a canvas-aspect change and a
+//! trip through a preset file unchanged. Pixels only exist while a pointer is
+//! being handled.
 
-use serde::{Deserialize, Serialize};
+/// Smallest layer, as a fraction of the canvas.
+pub const MIN_LAYER_SIZE: f32 = 0.06;
 
-/// A rectangle in normalized canvas space (`0..1` on both axes).
-///
-/// `x`/`y` are the top-left corner, `w`/`h` the extent. The rectangle is not
-/// clamped on construction -- the manipulator clamps it while editing -- but
-/// [`NormalizedRect::sanitized`] enforces the invariants used by the renderer.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct NormalizedRect {
-    /// Left edge, `0..1`.
+/// A rectangle in canvas fractions.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct NormRect {
     pub x: f32,
-    /// Top edge, `0..1`.
     pub y: f32,
-    /// Width, `0..1`.
     pub w: f32,
-    /// Height, `0..1`.
     pub h: f32,
 }
 
-impl Default for NormalizedRect {
-    fn default() -> Self {
-        Self {
-            x: 0.0,
-            y: 0.0,
-            w: 1.0,
-            h: 1.0,
-        }
-    }
-}
+impl NormRect {
+    pub const FULL: Self = Self {
+        x: 0.0,
+        y: 0.0,
+        w: 1.0,
+        h: 1.0,
+    };
 
-impl NormalizedRect {
-    /// Construct a rect.
     pub fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
         Self { x, y, w, h }
     }
 
-    /// Full-canvas rect.
-    pub fn full() -> Self {
-        Self::default()
-    }
-
-    /// Left edge.
-    pub fn left(&self) -> f32 {
+    pub fn left(self) -> f32 {
         self.x
     }
 
-    /// Right edge.
-    pub fn right(&self) -> f32 {
+    pub fn right(self) -> f32 {
         self.x + self.w
     }
 
-    /// Top edge.
-    pub fn top(&self) -> f32 {
+    pub fn top(self) -> f32 {
         self.y
     }
 
-    /// Bottom edge.
-    pub fn bottom(&self) -> f32 {
+    pub fn bottom(self) -> f32 {
         self.y + self.h
     }
 
-    /// Center on the x axis.
-    pub fn center_x(&self) -> f32 {
+    pub fn center_x(self) -> f32 {
         self.x + self.w * 0.5
     }
 
-    /// Center on the y axis.
-    pub fn center_y(&self) -> f32 {
+    pub fn center_y(self) -> f32 {
         self.y + self.h * 0.5
     }
 
-    /// Center point.
-    pub fn center(&self) -> (f32, f32) {
-        (self.center_x(), self.center_y())
-    }
-
-    /// True if the rect has a positive area.
-    pub fn is_valid(&self) -> bool {
-        self.w > 0.0 && self.h > 0.0 && self.x.is_finite() && self.y.is_finite()
-    }
-
-    /// True if the point (in normalized space) lies inside the rect.
-    pub fn contains(&self, px: f32, py: f32) -> bool {
-        px >= self.left() && px <= self.right() && py >= self.top() && py <= self.bottom()
-    }
-
-    /// Clamp to a minimum size of `min` on both axes, keeping the top-left.
-    pub fn with_min_size(mut self, min: f32) -> Self {
-        self.w = self.w.max(min);
-        self.h = self.h.max(min);
-        self
-    }
-
-    /// Clamp the rect into `0..1` without changing its size when possible.
-    pub fn clamped_to_canvas(mut self) -> Self {
-        self.w = self.w.clamp(0.001, 1.0);
-        self.h = self.h.clamp(0.001, 1.0);
-        self.x = self.x.clamp(0.0, 1.0 - self.w);
-        self.y = self.y.clamp(0.0, 1.0 - self.h);
-        self
-    }
-
-    /// Replace non-finite values with a full-canvas rect.
-    pub fn sanitized(self) -> Self {
-        if self.x.is_finite()
-            && self.y.is_finite()
-            && self.w.is_finite()
-            && self.h.is_finite()
-            && self.w > 0.0
-            && self.h > 0.0
-        {
-            self
-        } else {
-            Self::full()
+    pub fn center(self) -> Point {
+        Point {
+            x: self.center_x(),
+            y: self.center_y(),
         }
     }
 
-    /// Scale a normalized rect into pixel space of a canvas of size `size`.
-    pub fn to_pixels(&self, canvas: Size) -> PixelRect {
-        PixelRect {
+    /// Page-relative rect in pixels.
+    pub fn to_px(self, canvas: Size) -> PxRect {
+        PxRect {
             x: self.x * canvas.w,
             y: self.y * canvas.h,
             w: self.w * canvas.w,
             h: self.h * canvas.h,
         }
     }
+
+    /// From pixels back to fractions.
+    pub fn from_px(px: PxRect, canvas: Size) -> Self {
+        let cw = canvas.w.max(1.0);
+        let ch = canvas.h.max(1.0);
+        Self {
+            x: px.x / cw,
+            y: px.y / ch,
+            w: px.w / cw,
+            h: px.h / ch,
+        }
+    }
+
+    /// Pixel aspect ratio (width / height) for a given canvas.
+    pub fn aspect_px(self, canvas: Size) -> f32 {
+        let px = self.to_px(canvas);
+        if px.h <= 0.0 {
+            return 1.0;
+        }
+        px.w / px.h
+    }
+
+    /// Keep the rectangle on the canvas and at least [`MIN_LAYER_SIZE`] big.
+    pub fn clamped(self) -> Self {
+        let w = self.w.clamp(MIN_LAYER_SIZE, 1.0);
+        let h = self.h.clamp(MIN_LAYER_SIZE, 1.0);
+        let x = self.x.clamp(0.0, 1.0 - w);
+        let y = self.y.clamp(0.0, 1.0 - h);
+        Self { x, y, w, h }
+    }
+
+    pub fn contains(self, p: Point) -> bool {
+        p.x >= self.x && p.x <= self.right() && p.y >= self.y && p.y <= self.bottom()
+    }
 }
 
-/// A rectangle in pixels (canvas-local coordinates).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PixelRect {
-    /// Left edge.
+/// A point in canvas fractions.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point {
     pub x: f32,
-    /// Top edge.
     pub y: f32,
-    /// Width.
-    pub w: f32,
-    /// Height.
-    pub h: f32,
 }
 
-impl PixelRect {
-    /// Right edge.
-    pub fn right(&self) -> f32 {
-        self.x + self.w
-    }
-
-    /// Bottom edge.
-    pub fn bottom(&self) -> f32 {
-        self.y + self.h
-    }
-
-    /// Center.
-    pub fn center(&self) -> (f32, f32) {
-        (self.x + self.w * 0.5, self.y + self.h * 0.5)
-    }
-}
-
-/// A canvas size in pixels or points.
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+/// A size in pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Size {
-    /// Width.
     pub w: f32,
-    /// Height.
     pub h: f32,
 }
 
 impl Size {
-    /// Construct.
     pub fn new(w: f32, h: f32) -> Self {
         Self { w, h }
     }
+}
 
-    /// Nominal 16:9 canvas at 1920x1080 -- only used for placeholders.
-    pub fn hd() -> Self {
-        Self::new(1920.0, 1080.0)
+/// A rectangle in pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PxRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl PxRect {
+    pub fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
+        Self { x, y, w, h }
+    }
+
+    pub fn right(self) -> f32 {
+        self.x + self.w
+    }
+
+    pub fn bottom(self) -> f32 {
+        self.y + self.h
+    }
+
+    pub fn center(self) -> Point {
+        Point {
+            x: self.x + self.w * 0.5,
+            y: self.y + self.h * 0.5,
+        }
+    }
+
+    pub fn contains(self, p: Point) -> bool {
+        p.x >= self.x && p.x <= self.right() && p.y >= self.y && p.y <= self.bottom()
     }
 }
 
-/// Texture cropping, expressed in normalized source coordinates.
-///
-/// `left/top/right/bottom` are the amounts removed from each edge, matching the
-/// sliders in the layer context menu.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct CropRect {
-    /// Removed from the left edge, `0..1`.
+/// The four sides of the crop, as fractions of the source frame.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+pub struct Crop {
     pub left: f32,
-    /// Removed from the top edge, `0..1`.
     pub top: f32,
-    /// Removed from the right edge, `0..1`.
     pub right: f32,
-    /// Removed from the bottom edge, `0..1`.
     pub bottom: f32,
 }
 
-impl Default for CropRect {
-    fn default() -> Self {
-        Self::none()
-    }
-}
+impl Crop {
+    pub const ZERO: Self = Self {
+        left: 0.0,
+        top: 0.0,
+        right: 0.0,
+        bottom: 0.0,
+    };
 
-impl CropRect {
-    /// No crop.
-    pub fn none() -> Self {
+    /// Fraction of the source that is left after cropping, per axis.
+    pub const MAX_EDGE: f32 = 0.95;
+
+    pub fn is_zero(self) -> bool {
+        self == Self::ZERO
+    }
+
+    fn normalized(self) -> Self {
+        let left = self.left.clamp(0.0, Self::MAX_EDGE);
+        let top = self.top.clamp(0.0, Self::MAX_EDGE);
+        let right = self.right.clamp(0.0, Self::MAX_EDGE - left);
+        let bottom = self.bottom.clamp(0.0, Self::MAX_EDGE - top);
         Self {
-            left: 0.0,
-            top: 0.0,
-            right: 0.0,
-            bottom: 0.0,
+            left,
+            top,
+            right,
+            bottom,
         }
     }
 
-    /// Clamp each edge into `0..1` and ensure the remaining window is at least
-    /// 1% wide/tall so the shader never samples a degenerate range.
-    pub fn sanitized(self) -> Self {
-        let mut c = CropRect {
-            left: self.left.clamp(0.0, 1.0),
-            top: self.top.clamp(0.0, 1.0),
-            right: self.right.clamp(0.0, 1.0),
-            bottom: self.bottom.clamp(0.0, 1.0),
-        };
-        if c.left + c.right > 0.99 {
-            let scale = 0.99 / (c.left + c.right);
-            c.left *= scale;
-            c.right *= scale;
-        }
-        if c.top + c.bottom > 0.99 {
-            let scale = 0.99 / (c.top + c.bottom);
-            c.top *= scale;
-            c.bottom *= scale;
-        }
-        c
+    /// Normalized UV rect for the shader: (left, top, right, bottom) in 0..1
+    /// with the right/bottom expressed as "up to".
+    pub fn uv(self) -> [f32; 4] {
+        let c = self.normalized();
+        [c.left, c.top, 1.0 - c.right, 1.0 - c.bottom]
     }
 
-    /// Normalized `(u_min, v_min)` of the retained window.
-    pub fn uv_min(&self) -> (f32, f32) {
-        (self.left, self.top)
-    }
-
-    /// Normalized `(u_max, v_max)` of the retained window.
-    pub fn uv_max(&self) -> (f32, f32) {
-        (1.0 - self.right, 1.0 - self.bottom)
-    }
-
-    /// The retained window in normalized coordinates.
-    pub fn uv_size(&self) -> (f32, f32) {
-        let (u0, v0) = self.uv_min();
-        let (u1, v1) = self.uv_max();
-        ((u1 - u0).max(f32::EPSILON), (v1 - v0).max(f32::EPSILON))
-    }
-
-    /// True if any edge is non-zero.
-    pub fn is_active(&self) -> bool {
-        self.left > 0.0 || self.top > 0.0 || self.right > 0.0 || self.bottom > 0.0
-    }
-
-    /// Convert a normalized crop window into integer pixel bounds for a plane
-    /// of `w x h` texels. The returned rect is `(x, y, w, h)` and is guaranteed
-    /// to be non-empty and inside the plane.
-    pub fn to_pixel_window(&self, w: u32, h: u32) -> (u32, u32, u32, u32) {
-        let c = self.sanitized();
-        let x0 = (c.left * w as f32).floor().clamp(0.0, (w.saturating_sub(1)) as f32) as u32;
-        let y0 = (c.top * h as f32).floor().clamp(0.0, (h.saturating_sub(1)) as f32) as u32;
+    /// The cropped region of a `w` x `h` frame, in pixels.
+    pub fn to_px(self, w: u32, h: u32) -> (u32, u32, u32, u32) {
+        let c = self.normalized();
+        let x0 = (c.left * w as f32).round().clamp(0.0, w.saturating_sub(1) as f32) as u32;
+        let y0 = (c.top * h as f32).round().clamp(0.0, h.saturating_sub(1) as f32) as u32;
         let x1 = ((1.0 - c.right) * w as f32)
-            .ceil()
+            .round()
             .clamp((x0 + 1) as f32, w as f32) as u32;
         let y1 = ((1.0 - c.bottom) * h as f32)
-            .ceil()
+            .round()
             .clamp((y0 + 1) as f32, h as f32) as u32;
         (x0, y0, x1 - x0, y1 - y0)
     }
+
+    /// Effective visible size in pixels, used to keep the aspect math honest
+    /// when a layer is cropped.
+    pub fn visible(self, w: u32, h: u32) -> (u32, u32) {
+        let (_, _, cw, ch) = self.to_px(w, h);
+        (cw, ch)
+    }
 }
 
-/// The eight resize handles of a selected layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The eight resize handles, named by the corner or edge they sit on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handle {
-    /// Top-left corner.
     TopLeft,
-    /// Top-right corner.
-    TopRight,
-    /// Bottom-left corner.
-    BottomLeft,
-    /// Bottom-right corner.
-    BottomRight,
-    /// Left edge (middle).
-    Left,
-    /// Right edge (middle).
-    Right,
-    /// Top edge (middle).
     Top,
-    /// Bottom edge (middle).
+    TopRight,
+    Right,
+    BottomRight,
     Bottom,
+    BottomLeft,
+    Left,
 }
 
 impl Handle {
-    /// All handles in draw order.
-    pub const ALL: [Handle; 8] = [
-        Handle::TopLeft,
-        Handle::TopRight,
-        Handle::BottomLeft,
-        Handle::BottomRight,
-        Handle::Left,
-        Handle::Right,
-        Handle::Top,
-        Handle::Bottom,
+    pub const ALL: [Self; 8] = [
+        Self::TopLeft,
+        Self::Top,
+        Self::TopRight,
+        Self::Right,
+        Self::BottomRight,
+        Self::Bottom,
+        Self::BottomLeft,
+        Self::Left,
     ];
 
-    /// True for the four corner handles.
-    pub fn is_corner(self) -> bool {
-        matches!(
-            self,
-            Handle::TopLeft | Handle::TopRight | Handle::BottomLeft | Handle::BottomRight
-        )
+    /// Unit anchor inside the rectangle: (0,0) is the top-left corner.
+    pub fn anchor(self) -> (f32, f32) {
+        match self {
+            Self::TopLeft => (0.0, 0.0),
+            Self::Top => (0.5, 0.0),
+            Self::TopRight => (1.0, 0.0),
+            Self::Right => (1.0, 0.5),
+            Self::BottomRight => (1.0, 1.0),
+            Self::Bottom => (0.5, 1.0),
+            Self::BottomLeft => (0.0, 1.0),
+            Self::Left => (0.0, 0.5),
+        }
     }
 
-    /// The handle at `(px, py)` for a pixel-space rect, if the pointer is
-    /// within `radius` pixels of it.
-    pub fn hit_test(rect: PixelRect, px: f32, py: f32, radius: f32) -> Option<Handle> {
-        let (cx, cy) = rect.center();
-        let candidates = [
-            (Handle::TopLeft, rect.x, rect.y),
-            (Handle::TopRight, rect.right(), rect.y),
-            (Handle::BottomLeft, rect.x, rect.bottom()),
-            (Handle::BottomRight, rect.right(), rect.bottom()),
-            (Handle::Left, rect.x, cy),
-            (Handle::Right, rect.right(), cy),
-            (Handle::Top, cx, rect.y),
-            (Handle::Bottom, cx, rect.bottom()),
-        ];
-        for (handle, hx, hy) in candidates {
-            if (px - hx).abs() <= radius && (py - hy).abs() <= radius {
-                return Some(handle);
-            }
-        }
-        None
-    }
-
-    /// Resize `rect` by dragging `handle` by `(dx, dy)` normalized units.
-    ///
-    /// When `aspect` is `Some(ratio)` (`w/h` of the *source*), corner handles
-    /// keep the source aspect ratio, while edge handles are free so the user
-    /// can crop by dragging a single edge. `min_size` is enforced in
-    /// normalized units.
-    pub fn resize(
-        handle: Handle,
-        rect: NormalizedRect,
-        dx: f32,
-        dy: f32,
-        aspect: Option<f32>,
-        min_size: f32,
-    ) -> NormalizedRect {
-        let mut r = rect;
-        match handle {
-            Handle::Left => {
-                let nx = (r.x + dx).min(r.right() - min_size);
-                r.w = r.right() - nx;
-                r.x = nx;
-            }
-            Handle::Right => {
-                r.w = (r.w + dx).max(min_size);
-            }
-            Handle::Top => {
-                let ny = (r.y + dy).min(r.bottom() - min_size);
-                r.h = r.bottom() - ny;
-                r.y = ny;
-            }
-            Handle::Bottom => {
-                r.h = (r.h + dy).max(min_size);
-            }
-            Handle::TopLeft
-            | Handle::TopRight
-            | Handle::BottomLeft
-            | Handle::BottomRight => {
-                let left = matches!(handle, Handle::TopLeft | Handle::BottomLeft);
-                let top = matches!(handle, Handle::TopLeft | Handle::TopRight);
-                // Dragging a left/top edge moves the origin as well, so the
-                // size change is applied and then the origin is pulled back
-                // below.
-                let mut w = if left {
-                    (r.w - dx).max(min_size)
-                } else {
-                    (r.w + dx).max(min_size)
-                };
-                let mut h = if top {
-                    (r.h - dy).max(min_size)
-                } else {
-                    (r.h + dy).max(min_size)
-                };
-
-                // Aspect ratio lock for corner drags: derive the missing
-                // dimension from the dominant axis. The canvas is assumed
-                // square in normalized units, which is how `fit_rect` works
-                // (layers are letterboxed inside their rect).
-                if let Some(a) = aspect {
-                    if a.is_finite() && a > 0.0 {
-                        // h = w / a only when the pointer moved horizontally more.
-                        if dx.abs() >= dy.abs() {
-                            h = w / a;
-                        } else {
-                            w = h * a;
-                        }
-                        w = w.max(min_size);
-                        h = h.max(min_size);
-                    }
-                }
-
-                if left {
-                    r.x = r.right() - w;
-                }
-                if top {
-                    r.y = r.bottom() - h;
-                }
-                r.w = w;
-                r.h = h;
-            }
-        }
-        r
+    /// True when the handle moves the left edge, the right edge, both, or
+    /// neither.
+    pub fn edges(self) -> (bool, bool, bool, bool) {
+        let (ax, ay) = self.anchor();
+        (ax < 0.5, ax > 0.5, ay < 0.5, ay > 0.5)
     }
 }
 
-/// Snap a moving edge/value to the nearest candidate within `sensitivity`
-/// pixels, returning the snapped normalized value and the guide position.
-///
-/// `candidates` are normalized positions (edges/centers). `sensitivity` is in
-/// pixels of a canvas with height `canvas_len`.
-pub fn snap_value(
-    value: f32,
-    candidates: &[f32],
-    sensitivity_norm: f32,
-) -> (f32, Option<f32>) {
-    let mut best: Option<(f32, f32)> = None;
-    for &c in candidates {
-        let delta = (value - c).abs();
-        if delta <= sensitivity_norm && best.is_none_or(|(d, _)| delta < d) {
-            best = Some((delta, c));
+/// The handle nearest to `p`, within `tolerance` pixels of the rectangle's
+/// edge frame. Corners win over edges when both are in range.
+pub fn hit_handle(rect: PxRect, p: Point, tolerance: f32) -> Option<Handle> {
+    let mut best: Option<(f32, Handle)> = None;
+    for handle in Handle::ALL {
+        let (ax, ay) = handle.anchor();
+        let hp = Point {
+            x: rect.x + ax * rect.w,
+            y: rect.y + ay * rect.h,
+        };
+        let d = ((hp.x - p.x).powi(2) + (hp.y - p.y).powi(2)).sqrt();
+        if d <= tolerance && best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, handle));
         }
     }
-    match best {
-        Some((_, c)) => (c, Some(c)),
-        None => (value, None),
+    best.map(|(_, h)| h)
+}
+
+/// Resize `rect` by dragging `handle` a `delta` in pixels.
+///
+/// `aspect` is a pixel aspect ratio (width / height) to hold, if the layer is
+/// aspect-locked. The opposite corner stays put.
+pub fn resize_with_handle(
+    rect: NormRect,
+    handle: Handle,
+    delta: Point,
+    canvas: Size,
+    aspect: Option<f32>,
+) -> NormRect {
+    let px = rect.to_px(canvas);
+    let (left, right, top, bottom) = handle.edges();
+    let mut x0 = px.x;
+    let mut y0 = px.y;
+    let mut x1 = px.x + px.w;
+    let mut y1 = px.y + px.h;
+    if left {
+        x0 += delta.x;
     }
+    if right {
+        x1 += delta.x;
+    }
+    if top {
+        y0 += delta.y;
+    }
+    if bottom {
+        y1 += delta.y;
+    }
+
+    let min_w = MIN_LAYER_SIZE * canvas.w;
+    let min_h = MIN_LAYER_SIZE * canvas.h;
+    if x1 - x0 < min_w {
+        if left {
+            x0 = x1 - min_w;
+        } else {
+            x1 = x0 + min_w;
+        }
+    }
+    if y1 - y0 < min_h {
+        if top {
+            y0 = y1 - min_h;
+        } else {
+            y1 = y0 + min_h;
+        }
+    }
+
+    // Aspect lock: drive the free axis from the dragged one.
+    if let Some(a) = aspect.filter(|a| *a > 0.0) {
+        let w = x1 - x0;
+        let h = y1 - y0;
+        let corner = left || right;
+        let vertical = top || bottom;
+        if corner && vertical {
+            // Corners keep the width and derive the height.
+            let new_h = w / a;
+            if top {
+                y0 = y1 - new_h;
+            } else {
+                y1 = y0 + new_h;
+            }
+        } else if corner {
+            let new_h = w / a;
+            let cy = (y0 + y1) * 0.5;
+            y0 = cy - new_h * 0.5;
+            y1 = cy + new_h * 0.5;
+        } else {
+            let new_w = h * a;
+            let cx = (x0 + x1) * 0.5;
+            x0 = cx - new_w * 0.5;
+            x1 = cx + new_w * 0.5;
+        }
+    }
+
+    NormRect::from_px(PxRect::new(x0, y0, x1 - x0, y1 - y0), canvas).clamped()
+}
+
+/// Result of a snapping pass: the adjusted rectangle plus the guide lines that
+/// should be drawn while the snap holds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Snap {
+    pub rect: NormRect,
+    /// Vertical guide lines, as fractions of the canvas width.
+    pub guides_x: Vec<f32>,
+    /// Horizontal guide lines, as fractions of the canvas height.
+    pub guides_y: Vec<f32>,
+}
+
+impl Snap {
+    pub fn none(rect: NormRect) -> Self {
+        Self {
+            rect,
+            guides_x: Vec::new(),
+            guides_y: Vec::new(),
+        }
+    }
+
+    pub fn is_snapped(&self) -> bool {
+        !self.guides_x.is_empty() || !self.guides_y.is_empty()
+    }
+}
+
+/// Snap a moved rectangle to the canvas edges, the canvas centre lines and the
+/// edges/centres of the other visible layers, within `tolerance_px`.
+pub fn snap_move(rect: NormRect, canvas: Size, others: &[NormRect], tolerance_px: f32) -> Snap {
+    let mut targets_x = vec![0.0, 0.5, 1.0];
+    let mut targets_y = vec![0.0, 0.5, 1.0];
+    for other in others {
+        targets_x.extend([other.left(), other.center_x(), other.right()]);
+        targets_y.extend([other.top(), other.center_y(), other.bottom()]);
+    }
+
+    let tol_x = (tolerance_px / canvas.w.max(1.0)).min(0.5);
+    let tol_y = (tolerance_px / canvas.h.max(1.0)).min(0.5);
+
+    let mut snapped = rect;
+    let mut guides_x = Vec::new();
+    let mut guides_y = Vec::new();
+
+    if let Some((dx, target)) = nearest_snap([rect.left(), rect.center_x(), rect.right()], &targets_x, tol_x)
+    {
+        snapped.x += dx;
+        guides_x.push(target);
+    }
+    if let Some((dy, target)) = nearest_snap([rect.top(), rect.center_y(), rect.bottom()], &targets_y, tol_y)
+    {
+        snapped.y += dy;
+        guides_y.push(target);
+    }
+
+    Snap {
+        rect: snapped,
+        guides_x,
+        guides_y,
+    }
+}
+
+/// The smallest adjustment that puts one of `edges` on one of `targets`, plus
+/// the target it lands on, if any is within `tolerance` (in the same units).
+fn nearest_snap(edges: [f32; 3], targets: &[f32], tolerance: f32) -> Option<(f32, f32)> {
+    let mut best: Option<(f32, f32)> = None;
+    for edge in edges {
+        for target in targets {
+            let distance = (target - edge).abs();
+            if distance <= tolerance && best.is_none_or(|(best_d, _)| distance < best_d) {
+                best = Some((distance, *target));
+            }
+        }
+    }
+    best.map(|(distance, target)| {
+        let edge = edges
+            .iter()
+            .copied()
+            .find(|e| ((target - e).abs() - distance).abs() < 1e-6)
+            .unwrap_or(edges[0]);
+        (target - edge, target)
+    })
+}
+
+/// Fit `rect` to a pixel aspect ratio without moving its centre, used by the
+/// per-layer "lock aspect" toggle.
+pub fn apply_aspect(rect: NormRect, aspect: f32, canvas: Size) -> NormRect {
+    if aspect <= 0.0 || canvas.w <= 0.0 || canvas.h <= 0.0 {
+        return rect;
+    }
+    let px = rect.to_px(canvas);
+    let w = px.w;
+    let h = px.h;
+    let current = w / h.max(1e-3);
+    let (mut new_w, mut new_h) = if current > aspect {
+        (h * aspect, h)
+    } else {
+        (w, w / aspect)
+    };
+    if new_w < MIN_LAYER_SIZE * canvas.w {
+        new_w = MIN_LAYER_SIZE * canvas.w;
+        new_h = new_w / aspect;
+    }
+    if new_h < MIN_LAYER_SIZE * canvas.h {
+        new_h = MIN_LAYER_SIZE * canvas.h;
+        new_w = new_h * aspect;
+    }
+    let cx = px.center().x;
+    let cy = px.center().y;
+    NormRect::from_px(
+        PxRect::new(cx - new_w * 0.5, cy - new_h * 0.5, new_w, new_h),
+        canvas,
+    )
+    .clamped()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn normalized_rect_basic_accessors() {
-        let r = NormalizedRect::new(0.1, 0.2, 0.5, 0.4);
-        assert!((r.right() - 0.6).abs() < 1e-6);
-        assert!((r.bottom() - 0.6).abs() < 1e-6);
-        assert!((r.center_x() - 0.35).abs() < 1e-6);
-        assert!((r.center_y() - 0.4).abs() < 1e-6);
-        assert!(r.contains(0.3, 0.3));
-        assert!(!r.contains(0.9, 0.3));
+    fn canvas() -> Size {
+        Size::new(1600.0, 900.0)
     }
 
     #[test]
-    fn crop_uv_window_is_symmetric() {
-        let c = CropRect {
+    fn normalized_round_trip() {
+        let r = NormRect::new(0.1, 0.2, 0.3, 0.4);
+        let px = r.to_px(canvas());
+        assert_eq!(px, PxRect::new(160.0, 180.0, 480.0, 360.0));
+        assert_eq!(NormRect::from_px(px, canvas()), r);
+        assert!((r.aspect_px(canvas()) - 480.0 / 360.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn clamping_keeps_layer_on_canvas() {
+        let r = NormRect::new(0.9, -0.2, 0.5, 0.01).clamped();
+        assert!(r.right() <= 1.0 + 1e-6);
+        assert!(r.top() >= 0.0);
+        assert!(r.h >= MIN_LAYER_SIZE);
+    }
+
+    #[test]
+    fn hit_testing_the_eight_handles() {
+        let px = PxRect::new(100.0, 100.0, 400.0, 200.0);
+        let tolerance = 10.0;
+        for handle in Handle::ALL {
+            let (ax, ay) = handle.anchor();
+            let p = Point {
+                x: px.x + ax * px.w,
+                y: px.y + ay * px.h,
+            };
+            assert_eq!(hit_handle(px, p, tolerance), Some(handle));
+        }
+        assert_eq!(hit_handle(px, Point { x: 300.0, y: 200.0 }, tolerance), None);
+    }
+
+    #[test]
+    fn resizing_from_corners_keeps_the_opposite_corner() {
+        let r = NormRect::new(0.25, 0.25, 0.5, 0.5);
+        let moved = resize_with_handle(
+            r,
+            Handle::BottomRight,
+            Point { x: 160.0, y: 90.0 },
+            canvas(),
+            None,
+        );
+        assert!((moved.x - r.x).abs() < 1e-5);
+        assert!((moved.y - r.y).abs() < 1e-5);
+        assert!((moved.w - r.w - 0.1).abs() < 1e-4);
+        assert!((moved.h - r.h - 0.1).abs() < 1e-4);
+
+        let shrunk = resize_with_handle(
+            r,
+            Handle::TopLeft,
+            Point { x: 80.0, y: 45.0 },
+            canvas(),
+            None,
+        );
+        assert!((shrunk.right() - r.right()).abs() < 1e-5);
+        assert!((shrunk.bottom() - r.bottom()).abs() < 1e-5);
+        assert!(shrunk.w < r.w);
+    }
+
+    #[test]
+    fn resize_never_goes_below_minimum() {
+        let r = NormRect::new(0.4, 0.4, 0.2, 0.2);
+        let tiny = resize_with_handle(
+            r,
+            Handle::BottomRight,
+            Point { x: -500.0, y: -500.0 },
+            canvas(),
+            None,
+        );
+        assert!(tiny.w >= MIN_LAYER_SIZE - 1e-6);
+        assert!(tiny.h >= MIN_LAYER_SIZE - 1e-6);
+    }
+
+    #[test]
+    fn aspect_lock_holds_the_ratio_at_a_corner() {
+        let r = NormRect::new(0.2, 0.2, 0.4, 0.4);
+        let aspect = 16.0 / 9.0;
+        let out = resize_with_handle(
+            r,
+            Handle::BottomRight,
+            Point { x: 100.0, y: 0.0 },
+            canvas(),
+            Some(aspect),
+        );
+        let px = out.to_px(canvas());
+        assert!((px.w / px.h - aspect).abs() < 1e-3, "{}", px.w / px.h);
+    }
+
+    #[test]
+    fn apply_aspect_fits_inside_the_rect() {
+        let r = NormRect::new(0.1, 0.1, 0.5, 0.5);
+        let out = apply_aspect(r, 16.0 / 9.0, canvas());
+        let px = out.to_px(canvas());
+        assert!((px.w / px.h - 16.0 / 9.0).abs() < 1e-3);
+        assert!((out.center_x() - r.center_x()).abs() < 1e-4);
+        assert!((out.center_y() - r.center_y()).abs() < 1e-4);
+    }
+
+    #[test]
+    fn snapping_to_canvas_edges_and_centre() {
+        let r = NormRect::new(0.004, 0.3, 0.3, 0.3);
+        let snap = snap_move(r, canvas(), &[], 10.0);
+        assert_eq!(snap.rect.x, 0.0);
+        assert!(snap.is_snapped());
+        assert!(snap.guides_x.iter().any(|g| g.abs() < 1e-6));
+
+        let centered = NormRect::new(0.34, 0.3, 0.3, 0.3);
+        let snap = snap_move(centered, canvas(), &[], 20.0);
+        assert!((snap.rect.center_x() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn snapping_to_other_layers() {
+        let other = NormRect::new(0.5, 0.0, 0.5, 1.0);
+        let moving = NormRect::new(0.196, 0.2, 0.3, 0.3);
+        let snap = snap_move(moving, canvas(), &[other], 10.0);
+        assert!((snap.rect.right() - other.left()).abs() < 1e-5);
+        assert!(
+            snap.guides_x
+                .iter()
+                .any(|g| (g - other.left()).abs() < 1e-5)
+        );
+    }
+
+    #[test]
+    fn no_snap_when_far_away() {
+        let r = NormRect::new(0.2, 0.35, 0.3, 0.3);
+        let snap = snap_move(r, canvas(), &[], 4.0);
+        assert_eq!(snap.rect, r);
+        assert!(!snap.is_snapped());
+    }
+
+    #[test]
+    fn crop_uv_and_pixels() {
+        let crop = Crop {
             left: 0.1,
             top: 0.2,
-            right: 0.3,
-            bottom: 0.4,
+            right: 0.1,
+            bottom: 0.2,
         };
-        let (u0, v0) = c.uv_min();
-        let (u1, v1) = c.uv_max();
-        assert!((u0 - 0.1).abs() < 1e-6);
-        assert!((v0 - 0.2).abs() < 1e-6);
-        assert!((u1 - 0.7).abs() < 1e-6);
-        assert!((v1 - 0.6).abs() < 1e-6);
-        let (sw, sh) = c.uv_size();
-        assert!((sw - 0.6).abs() < 1e-6);
-        assert!((sh - 0.4).abs() < 1e-6);
+        assert_eq!(crop.uv(), [0.1, 0.2, 0.9, 0.8]);
+        assert_eq!(crop.to_px(1000, 500), (100, 100, 800, 300));
+        assert_eq!(crop.visible(1000, 500), (800, 300));
     }
 
     #[test]
-    fn crop_pixel_window_never_degenerate() {
-        let c = CropRect {
-            left: 0.999,
-            top: 0.0,
-            right: 0.999,
-            bottom: 0.0,
+    fn crop_is_bounded() {
+        let crop = Crop {
+            left: 0.6,
+            top: 0.6,
+            right: 0.6,
+            bottom: 0.6,
         };
-        let (x, y, w, h) = c.to_pixel_window(1920, 1080);
-        assert!(w >= 1);
-        assert!(h >= 1);
-        assert!(x + w <= 1920);
-        assert!(y + h <= 1080);
+        let (_, _, w, h) = crop.to_px(100, 100);
+        assert!(w >= 1 && h >= 1);
+        let uv = crop.uv();
+        assert!(uv[2] > uv[0]);
+        assert!(uv[3] > uv[1]);
     }
 
     #[test]
-    fn crop_pixel_window_accounts_for_odd_sizes() {
-        let c = CropRect {
-            left: 0.5,
-            top: 0.0,
-            right: 0.0,
-            bottom: 0.0,
-        };
-        let (x, _y, w, _h) = c.to_pixel_window(1919, 1079);
-        assert_eq!(x, 959);
-        assert_eq!(w, 960);
-    }
-
-    #[test]
-    fn handle_hit_test_finds_corners_first() {
-        let rect = PixelRect {
-            x: 100.0,
-            y: 100.0,
-            w: 200.0,
-            h: 100.0,
-        };
+    fn hit_handle_misses_outside_tolerance() {
+        let px = PxRect::new(0.0, 0.0, 100.0, 100.0);
+        assert_eq!(hit_handle(px, Point { x: 50.0, y: 50.0 }, 8.0), None);
         assert_eq!(
-            Handle::hit_test(rect, 100.0, 100.0, 8.0),
-            Some(Handle::TopLeft)
-        );
-        assert_eq!(
-            Handle::hit_test(rect, 300.0, 200.0, 8.0),
+            hit_handle(px, Point { x: 101.0, y: 101.0 }, 8.0),
             Some(Handle::BottomRight)
         );
-        assert_eq!(Handle::hit_test(rect, 200.0, 150.0, 8.0), None);
-    }
-
-    #[test]
-    fn resize_left_edge_moves_left_and_keeps_right_edge() {
-        let r = NormalizedRect::new(0.2, 0.2, 0.4, 0.4);
-        let out = Handle::resize(Handle::Left, r, 0.1, 0.0, None, 0.01);
-        assert!((out.x - 0.3).abs() < 1e-6);
-        assert!((out.right() - 0.6).abs() < 1e-6);
-    }
-
-    #[test]
-    fn resize_respects_min_size() {
-        let r = NormalizedRect::new(0.2, 0.2, 0.2, 0.2);
-        let out = Handle::resize(Handle::Right, r, -1.0, 0.0, None, 0.05);
-        assert!((out.w - 0.05).abs() < 1e-6);
-    }
-
-    #[test]
-    fn resize_corner_with_aspect_lock_uses_dominant_axis() {
-        let r = NormalizedRect::new(0.1, 0.1, 0.5, 0.5);
-        // Drag the bottom-right corner 0.2 to the right (dominant x).
-        let out = Handle::resize(Handle::BottomRight, r, 0.2, 0.01, Some(2.0), 0.01);
-        assert!((out.w - 0.7).abs() < 1e-5);
-        assert!((out.h - 0.35).abs() < 1e-5);
-    }
-
-    #[test]
-    fn snap_value_snaps_within_sensitivity() {
-        let (v, guide) = snap_value(0.504, &[0.0, 0.5, 1.0], 0.01);
-        assert!((v - 0.5).abs() < 1e-6);
-        assert_eq!(guide, Some(0.5));
-    }
-
-    #[test]
-    fn snap_value_ignores_far_candidates() {
-        let (v, guide) = snap_value(0.3, &[0.0, 0.5, 1.0], 0.01);
-        assert!((v - 0.3).abs() < 1e-6);
-        assert_eq!(guide, None);
     }
 }

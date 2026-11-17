@@ -1,33 +1,169 @@
-//! Layout presets.
+//! Layouts and presets.
 //!
-//! A preset captures *geometry, crops and z-order* for a set of roles. Applying
-//! a preset maps the session's layers onto the preset's roles (or, when roles
-//! do not match, by order), so a standard "side-by-side" layout can be reused
-//! with different media.
+//! A preset is slot-based: slot 0 is the source, slot 1 the first reaction,
+//! slots 2-3 the extras. Applying one maps slots onto layers in order, so the
+//! same preset works for any set of videos. Slots carry the full geometry
+//! (rect, crop, opacity, fit) and z-order, not just rectangles.
 
 use serde::{Deserialize, Serialize};
 
-use super::geom::{CropRect, NormalizedRect};
-use super::layout::FitMode;
-use super::session::{LayerRole, Session, SCHEMA_VERSION};
+use super::geom::{Crop, NormRect};
+use super::session::{CanvasAspect, FitMode, Session, now_ms, new_id};
 
-/// One entry of a preset: the look of a single role.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PresetRole {
-    /// Which role this entry describes.
-    pub role: LayerRole,
-    /// Where the layer sits on the canvas.
-    pub rect: NormalizedRect,
-    /// Texture crop.
+/// Bumped when the preset file shape changes.
+pub const PRESET_VERSION: u32 = 1;
+
+/// The layouts offered when starting a session.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutType {
+    /// Source left, reactions stacked on the right.
+    SideBySide,
+    /// Equal cells: 2 stacked, 3 in an L, 4 in a 2x2.
+    Grid,
+    /// Reaction fills the canvas, the source sits on top as an inset.
+    PipReactionOverSource,
+    /// Source fills the canvas, the reaction sits on top as an inset.
+    PipSourceOverReaction,
+    /// Anything the user built by hand; saved presets only.
+    Custom,
+}
+
+impl LayoutType {
+    /// The four that can be chosen when creating a session.
+    pub const CHOOSABLE: [Self; 4] = [
+        Self::SideBySide,
+        Self::Grid,
+        Self::PipReactionOverSource,
+        Self::PipSourceOverReaction,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SideBySide => "Side-by-Side Split",
+            Self::Grid => "Grid",
+            Self::PipReactionOverSource => "Picture-in-Picture (Reaction over Source)",
+            Self::PipSourceOverReaction => "Picture-in-Picture (Source over Reaction)",
+            Self::Custom => "Custom",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::SideBySide => "Source on the left, every reaction stacked on the right.",
+            Self::Grid => "Equal cells: two stacked, three in an L, four in a 2x2.",
+            Self::PipReactionOverSource => "The source fills the canvas; the reaction sits on top.",
+            Self::PipSourceOverReaction => "The reaction fills the canvas; the source sits on top.",
+            Self::Custom => "Saved from a session you arranged by hand.",
+        }
+    }
+}
+
+/// The rectangles a layout gives `count` layers, in slot order.
+pub fn layout_rects(layout: LayoutType, count: usize) -> Vec<NormRect> {
+    let n = count.clamp(2, 4);
+    match layout {
+        LayoutType::Grid => grid(n),
+        LayoutType::PipReactionOverSource => pip(n, PipOrder::ReactionOnTop),
+        LayoutType::PipSourceOverReaction => pip(n, PipOrder::SourceOnTop),
+        LayoutType::SideBySide | LayoutType::Custom => split(n),
+    }
+}
+
+/// The z-order a layout wants, in slot order. Higher is on top.
+pub fn layout_z(layout: LayoutType, count: usize) -> Vec<i32> {
+    let n = count.clamp(2, 4);
+    match layout {
+        LayoutType::PipReactionOverSource => {
+            let mut z: Vec<i32> = (0..n as i32).collect();
+            // Slot 0 is the source; it goes behind the reaction in slot 1.
+            z[0] = 0;
+            if n > 1 {
+                z[1] = 1;
+            }
+            z
+        }
+        LayoutType::PipSourceOverReaction => {
+            let mut z: Vec<i32> = (0..n as i32).collect();
+            if n > 1 {
+                z[0] = 1;
+                z[1] = 0;
+            }
+            z
+        }
+        _ => (0..n as i32).collect(),
+    }
+}
+
+enum PipOrder {
+    SourceOnTop,
+    ReactionOnTop,
+}
+
+fn split(n: usize) -> Vec<NormRect> {
+    let rest = (n - 1) as f32;
+    let mut rects = vec![NormRect::new(0.0, 0.0, 0.5, 1.0)];
+    for i in 0..(n - 1) {
+        rects.push(NormRect::new(0.5, i as f32 / rest, 0.5, 1.0 / rest));
+    }
+    rects
+}
+
+fn grid(n: usize) -> Vec<NormRect> {
+    if n == 2 {
+        return vec![
+            NormRect::new(0.0, 0.0, 1.0, 0.5),
+            NormRect::new(0.0, 0.5, 1.0, 0.5),
+        ];
+    }
+    let mut cells = vec![
+        NormRect::new(0.0, 0.0, 0.5, 0.5),
+        NormRect::new(0.5, 0.0, 0.5, 0.5),
+        NormRect::new(0.0, 0.5, 0.5, 0.5),
+        NormRect::new(0.5, 0.5, 0.5, 0.5),
+    ];
+    if n == 3 {
+        cells[2] = NormRect::new(0.25, 0.5, 0.5, 0.5);
+    }
+    cells.truncate(n);
+    cells
+}
+
+fn pip(n: usize, order: PipOrder) -> Vec<NormRect> {
+    let size = 0.32;
+    let margin = 0.02;
+    let inset = NormRect::new(1.0 - size - margin, 1.0 - size - margin, size, size);
+    let mut rects = match order {
+        // Slot 0 is the source.
+        PipOrder::SourceOnTop => vec![inset, NormRect::FULL],
+        PipOrder::ReactionOnTop => vec![NormRect::FULL, inset],
+    };
+    let extras = [
+        NormRect::new(1.0 - size - margin, margin, size, size),
+        NormRect::new(margin, margin, size, size),
+    ];
+    for rect in extras {
+        if rects.len() >= n {
+            break;
+        }
+        rects.push(rect);
+    }
+    rects.truncate(n);
+    rects
+}
+
+/// One layer's placement inside a preset.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PresetSlot {
+    pub rect: NormRect,
     #[serde(default)]
-    pub crop: CropRect,
-    /// Opacity.
+    pub crop: Crop,
     #[serde(default = "one")]
     pub opacity: f32,
-    /// Fit/fill.
-    #[serde(default)]
+    #[serde(default = "default_fit")]
     pub fit: FitMode,
-    /// Stacking order (dense, ascending).
+    /// Paint order within the preset.
+    #[serde(default)]
     pub z_index: i32,
 }
 
@@ -35,415 +171,293 @@ fn one() -> f32 {
     1.0
 }
 
-/// A named layout preset.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+fn default_fit() -> FitMode {
+    FitMode::Contain
+}
+
+impl PresetSlot {
+    pub fn new(rect: NormRect, z_index: i32) -> Self {
+        Self {
+            rect,
+            crop: Crop::ZERO,
+            opacity: 1.0,
+            fit: FitMode::Contain,
+            z_index,
+        }
+    }
+}
+
+/// A saved layout.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Preset {
-    /// Schema version, always written.
     pub version: u32,
-    /// Stable identifier (file stem).
     pub id: String,
-    /// Display name.
     pub name: String,
-    /// True for the built-in presets (not removable).
     #[serde(default)]
-    pub builtin: bool,
-    /// Role entries.
-    pub roles: Vec<PresetRole>,
+    pub built_in: bool,
+    pub layout: LayoutType,
+    #[serde(default = "default_aspect")]
+    pub canvas_aspect: CanvasAspect,
+    pub slots: Vec<PresetSlot>,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+fn default_aspect() -> CanvasAspect {
+    CanvasAspect::Ratio16x9
 }
 
 impl Preset {
-    /// A preset from a list of role entries.
-    pub fn new(id: impl Into<String>, name: impl Into<String>, roles: Vec<PresetRole>) -> Self {
+    pub fn new(name: impl Into<String>, layout: LayoutType, slots: Vec<PresetSlot>) -> Self {
+        let now = now_ms();
         Self {
-            version: SCHEMA_VERSION,
-            id: id.into(),
+            version: PRESET_VERSION,
+            id: new_id("preset"),
             name: name.into(),
-            builtin: false,
-            roles,
+            built_in: false,
+            layout,
+            canvas_aspect: CanvasAspect::Ratio16x9,
+            slots,
+            created_at: now,
+            updated_at: now,
         }
     }
 
-    /// Capture the geometry of an existing session into a new custom preset.
-    pub fn from_session(
-        id: impl Into<String>,
-        name: impl Into<String>,
-        session: &Session,
-    ) -> Self {
-        let mut s = session.clone();
-        s.normalize_z();
-        let roles = s
-            .layers
-            .iter()
-            .map(|l| PresetRole {
-                role: l.role,
-                rect: l.rect,
-                crop: l.crop,
-                opacity: l.opacity,
-                fit: l.fit,
-                z_index: l.z_index,
-            })
-            .collect();
-        Self::new(id, name, roles)
-    }
-
-    /// Apply the preset to a session in place.
-    ///
-    /// Matching is done by role first; any remaining preset entries are applied
-    /// in order to the remaining layers. Layers with no preset entry keep their
-    /// current geometry. Also returns the number of layers updated.
-    pub fn apply(&self, session: &mut Session) -> usize {
-        let mut used_roles: Vec<bool> = vec![false; self.roles.len()];
-        let mut updated = 0usize;
-        let layer_ids: Vec<u64> = session.layers.iter().map(|l| l.id).collect();
-
-        // Pass 1: exact role matches.
-        for id in &layer_ids {
-            let Some(idx) = session.layer_index(*id) else {
-                continue;
-            };
-            let role = session.layers[idx].role;
-            if let Some((pi, _)) = self
-                .roles
-                .iter()
-                .enumerate()
-                .find(|(pi, r)| r.role == role && !used_roles[*pi])
-            {
-                used_roles[pi] = true;
-                apply_role(&mut session.layers[idx], &self.roles[pi]);
-                updated += 1;
-            }
+    /// Snapshot a session's current arrangement as a reusable preset.
+    pub fn from_session(name: impl Into<String>, session: &Session) -> Self {
+        let paint = session.paint_order();
+        let mut slots = Vec::with_capacity(session.layers.len());
+        for (z, index) in paint.into_iter().enumerate() {
+            let layer = &session.layers[index];
+            slots.push(PresetSlot {
+                rect: layer.rect,
+                crop: layer.crop,
+                opacity: layer.opacity,
+                fit: layer.fit,
+                z_index: z as i32,
+            });
         }
+        let mut preset = Self::new(name, LayoutType::Custom, slots);
+        preset.canvas_aspect = session.canvas_aspect;
+        preset
+    }
 
-        // Pass 2: fill from the remaining entries, in order.
-        let mut remaining = self
-            .roles
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !used_roles[*i])
-            .map(|(_, r)| r);
-        for id in &layer_ids {
-            let Some(next) = remaining.next() else { break };
-            let Some(idx) = session.layer_index(*id) else {
-                continue;
-            };
-            if used_roles
-                .iter()
-                .enumerate()
-                .any(|(i, used)| !used && self.roles[i].role == session.layers[idx].role)
-            {
-                continue;
-            }
-            apply_role(&mut session.layers[idx], next);
-            updated += 1;
-        }
-
-        session.normalize_z();
-        updated
+    pub fn slot_count(&self) -> usize {
+        self.slots.len()
     }
 }
 
-fn apply_role(layer: &mut super::session::LayerConfig, entry: &PresetRole) {
-    layer.rect = entry.rect.sanitized().clamped_to_canvas();
-    layer.crop = entry.crop.sanitized();
-    layer.opacity = entry.opacity.clamp(0.0, 1.0);
-    layer.fit = entry.fit;
-    layer.z_index = entry.z_index;
-}
-
-/// The library of built-in plus user presets.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PresetLibrary {
-    /// Schema version, always written.
-    pub version: u32,
-    /// All presets (built-ins first).
-    pub presets: Vec<Preset>,
-}
-
-impl Default for PresetLibrary {
-    fn default() -> Self {
-        Self {
-            version: SCHEMA_VERSION,
-            presets: builtin_presets(),
-        }
-    }
-}
-
-impl PresetLibrary {
-    /// Load the built-ins and merge user presets from disk.
-    pub fn with_user(user: Vec<Preset>) -> Self {
-        let mut lib = Self::default();
-        for p in user {
-            if p.builtin {
-                continue;
-            }
-            lib.presets.retain(|e| e.id != p.id);
-            lib.presets.push(p);
-        }
-        lib
-    }
-
-    /// Find a preset by id.
-    pub fn get(&self, id: &str) -> Option<&Preset> {
-        self.presets.iter().find(|p| p.id == id)
-    }
-
-    /// Add or replace a preset by id.
-    pub fn upsert(&mut self, preset: Preset) {
-        self.presets.retain(|p| p.id != preset.id);
-        self.presets.push(preset);
-    }
-
-    /// Remove a user preset. Built-ins cannot be removed.
-    pub fn remove(&mut self, id: &str) -> bool {
-        if self.get(id).is_some_and(|p| p.builtin) {
-            return false;
-        }
-        let before = self.presets.len();
-        self.presets.retain(|p| p.id != id);
-        self.presets.len() != before
-    }
-
-    /// Only the user presets, for persistence.
-    pub fn user_presets(&self) -> Vec<Preset> {
-        self.presets
-            .iter()
-            .filter(|p| !p.builtin)
-            .cloned()
-            .collect()
-    }
-}
-
-fn role(
-    role: LayerRole,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    z: i32,
-) -> PresetRole {
-    PresetRole {
-        role,
-        rect: NormalizedRect::new(x, y, w, h),
-        crop: CropRect::none(),
-        opacity: 1.0,
-        fit: FitMode::Fit,
-        z_index: z,
-    }
-}
-
-/// The standard layouts offered by "New Session" and the Presets screen.
+/// The presets that ship with the app.
 pub fn builtin_presets() -> Vec<Preset> {
-    let mut out = Vec::new();
-
-    out.push(Preset {
-        builtin: true,
-        ..Preset::new(
-            "builtin-split",
-            "Side-by-Side Split",
-            vec![
-                role(LayerRole::Source, 0.0, 0.0, 0.5, 1.0, 0),
-                role(LayerRole::Reaction1, 0.5, 0.0, 0.5, 1.0, 1),
-                role(LayerRole::Reaction2, 0.5, 0.5, 0.5, 0.5, 2),
-            ],
-        )
-    });
-
-    // 2x2 grid.
-    out.push(Preset {
-        builtin: true,
-        ..Preset::new(
-            "builtin-grid",
-            "Grid",
-            vec![
-                role(LayerRole::Source, 0.0, 0.0, 0.5, 0.5, 0),
-                role(LayerRole::Reaction1, 0.5, 0.0, 0.5, 0.5, 1),
-                role(LayerRole::Reaction2, 0.0, 0.5, 0.5, 0.5, 2),
-                role(LayerRole::Reaction3, 0.5, 0.5, 0.5, 0.5, 3),
-                role(LayerRole::ReactionOther, 0.5, 0.5, 0.5, 0.5, 4),
-            ],
-        )
-    });
-
-    // Reaction picture-in-picture over the source.
-    out.push(Preset {
-        builtin: true,
-        ..Preset::new(
-            "builtin-pip-reaction",
-            "Picture-in-Picture (Reaction over Source)",
-            vec![
-                role(LayerRole::Source, 0.0, 0.0, 1.0, 1.0, 0),
-                role(LayerRole::Reaction1, 0.66, 0.62, 0.32, 0.32, 1),
-                role(LayerRole::Reaction2, 0.34, 0.62, 0.30, 0.30, 2),
-                role(LayerRole::Reaction3, 0.02, 0.62, 0.30, 0.30, 3),
-            ],
-        )
-    });
-
-    // Source picture-in-picture over the reaction.
-    out.push(Preset {
-        builtin: true,
-        ..Preset::new(
-            "builtin-pip-source",
-            "Picture-in-Picture (Source over Reaction)",
-            vec![
-                role(LayerRole::Reaction1, 0.0, 0.0, 1.0, 1.0, 0),
-                role(LayerRole::Reaction2, 0.0, 1.0, 0.0, 0.0, 1),
-                role(LayerRole::Source, 0.66, 0.62, 0.32, 0.32, 2),
-                role(LayerRole::Reaction3, 0.0, 1.0, 0.0, 0.0, 3),
-            ],
-        )
-    });
-
-    out
+    let mk = |id: &str, name: &str, layout: LayoutType, slots: Vec<PresetSlot>| Preset {
+        version: PRESET_VERSION,
+        id: (*id).to_owned(),
+        name: (*name).to_owned(),
+        built_in: true,
+        layout,
+        canvas_aspect: CanvasAspect::Ratio16x9,
+        slots,
+        created_at: 0,
+        updated_at: 0,
+    };
+    let from_layout = |layout: LayoutType, n: usize| {
+        let rects = layout_rects(layout, n);
+        let z = layout_z(layout, n);
+        rects
+            .into_iter()
+            .zip(z)
+            .map(|(r, z)| PresetSlot::new(r, z))
+            .collect::<Vec<_>>()
+    };
+    vec![
+        mk(
+            "std_side",
+            "Side by side",
+            LayoutType::SideBySide,
+            from_layout(LayoutType::SideBySide, 2),
+        ),
+        mk(
+            "std_stack",
+            "Stacked",
+            LayoutType::Grid,
+            from_layout(LayoutType::Grid, 2),
+        ),
+        mk(
+            "std_pip_reaction",
+            "Corner, reaction on top",
+            LayoutType::PipReactionOverSource,
+            from_layout(LayoutType::PipReactionOverSource, 2),
+        ),
+        mk(
+            "std_pip_source",
+            "Corner, source on top",
+            LayoutType::PipSourceOverReaction,
+            from_layout(LayoutType::PipSourceOverReaction, 2),
+        ),
+        mk(
+            "std_three",
+            "Source plus two",
+            LayoutType::SideBySide,
+            from_layout(LayoutType::SideBySide, 3),
+        ),
+        mk(
+            "std_quad",
+            "Four-up grid",
+            LayoutType::Grid,
+            from_layout(LayoutType::Grid, 4),
+        ),
+    ]
 }
 
-/// Layout choice in the New Session modal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NewSessionLayout {
-    /// Side-by-side.
-    Split,
-    /// 2x2.
-    Grid,
-    /// Reaction over source.
-    PipReactionOverSource,
-    /// Source over reaction.
-    PipSourceOverReaction,
+/// Apply a preset to a session, mapping slots onto layers in order and
+/// preserving offsets, names and volume (a preset is a layout, not a session).
+pub fn apply_preset(session: &mut Session, preset: &Preset) {
+    if preset.slots.is_empty() || session.layers.is_empty() {
+        return;
+    }
+    let order = session.paint_order();
+    for (slot_index, layer_index) in order.into_iter().enumerate() {
+        let slot = &preset.slots[slot_index.min(preset.slots.len() - 1)];
+        let layer = &mut session.layers[layer_index];
+        layer.rect = slot.rect;
+        layer.crop = slot.crop;
+        layer.opacity = slot.opacity;
+        layer.fit = slot.fit;
+    }
+    // Slot order is the preset's paint order, so z comes from the slots.
+    for (slot_index, layer_index) in order.into_iter().enumerate() {
+        let slot = &preset.slots[slot_index.min(preset.slots.len() - 1)];
+        session.layers[layer_index].z_index = slot.z_index;
+    }
+    session.normalize_z();
+    session.touch();
 }
 
-impl NewSessionLayout {
-    /// All choices in menu order.
-    pub const ALL: [NewSessionLayout; 4] = [
-        NewSessionLayout::Split,
-        NewSessionLayout::Grid,
-        NewSessionLayout::PipReactionOverSource,
-        NewSessionLayout::PipSourceOverReaction,
-    ];
-
-    /// Menu label.
-    pub fn label(self) -> &'static str {
-        match self {
-            NewSessionLayout::Split => "Side-by-Side Split",
-            NewSessionLayout::Grid => "Grid",
-            NewSessionLayout::PipReactionOverSource => "Picture-in-Picture (Reaction over Source)",
-            NewSessionLayout::PipSourceOverReaction => "Picture-in-Picture (Source over Reaction)",
-        }
-    }
-
-    /// The built-in preset id backing this layout.
-    pub fn preset_id(self) -> &'static str {
-        match self {
-            NewSessionLayout::Split => "builtin-split",
-            NewSessionLayout::Grid => "builtin-grid",
-            NewSessionLayout::PipReactionOverSource => "builtin-pip-reaction",
-            NewSessionLayout::PipSourceOverReaction => "builtin-pip-source",
-        }
-    }
-
-    /// Number of layers created by default for this layout, including source.
-    pub fn default_layer_count(self) -> usize {
-        match self {
-            NewSessionLayout::Split => 2,
-            NewSessionLayout::Grid => 4,
-            NewSessionLayout::PipReactionOverSource => 2,
-            NewSessionLayout::PipSourceOverReaction => 2,
-        }
-    }
+/// Kept for readers of the layout table in the New Session dialog.
+pub fn layout_summary(layout: LayoutType) -> &'static str {
+    layout.description()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::session::LayerConfig;
+    use crate::model::session::{MediaSource, Role};
 
-    fn session_with_roles(roles: &[LayerRole]) -> Session {
-        let mut s = Session::new("t", "T", crate::model::CanvasAspect::Widescreen);
-        for (i, r) in roles.iter().enumerate() {
-            s.layers.push(LayerConfig::new(
-                (i + 1) as u64,
-                r.default_label(),
-                *r,
-                format!("/tmp/{i}.mp4"),
-                NormalizedRect::full(),
+    fn session_with(n: usize) -> Session {
+        let mut s = Session::new("preset test");
+        for i in 0..n {
+            s.layers.push(crate::model::session::Layer::new(
+                format!("L{i}"),
+                if i == 0 { Role::Source } else { Role::Reaction },
+                MediaSource::file(format!("/tmp/{i}.mp4")),
+                NormRect::FULL,
                 i as i32,
             ));
         }
-        s.sanitize();
         s
     }
 
     #[test]
-    fn builtin_presets_are_rectangular_and_ordered() {
-        for p in builtin_presets() {
-            assert!(!p.roles.is_empty(), "preset {} has no roles", p.id);
-            for r in &p.roles {
-                assert!(r.rect.is_valid());
-                assert!(r.rect.x >= 0.0 && r.rect.y >= 0.0);
-                assert!(r.rect.right() <= 1.0001 && r.rect.bottom() <= 1.0001);
+    fn side_by_side_halves_the_canvas() {
+        let rects = layout_rects(LayoutType::SideBySide, 2);
+        assert_eq!(rects[0], NormRect::new(0.0, 0.0, 0.5, 1.0));
+        assert_eq!(rects[1], NormRect::new(0.5, 0.0, 0.5, 1.0));
+    }
+
+    #[test]
+    fn grid_shapes() {
+        let two = layout_rects(LayoutType::Grid, 2);
+        assert_eq!(two.len(), 2);
+        assert_eq!(two[1], NormRect::new(0.0, 0.5, 1.0, 0.5));
+        let three = layout_rects(LayoutType::Grid, 3);
+        assert_eq!(three[2], NormRect::new(0.25, 0.5, 0.5, 0.5));
+        let four = layout_rects(LayoutType::Grid, 4);
+        assert_eq!(four[3], NormRect::new(0.5, 0.5, 0.5, 0.5));
+    }
+
+    #[test]
+    fn pip_puts_the_source_on_top_or_underneath() {
+        let reaction_on_top = layout_rects(LayoutType::PipReactionOverSource, 2);
+        assert_eq!(reaction_on_top[0], NormRect::FULL);
+        assert!(reaction_on_top[1].w < 0.5);
+        let z = layout_z(LayoutType::PipReactionOverSource, 2);
+        assert!(z[1] > z[0]);
+
+        let source_on_top = layout_rects(LayoutType::PipSourceOverReaction, 2);
+        assert_eq!(source_on_top[1], NormRect::FULL);
+        let z = layout_z(LayoutType::PipSourceOverReaction, 2);
+        assert!(z[0] > z[1]);
+    }
+
+    #[test]
+    fn every_layout_covers_the_requested_count() {
+        for layout in LayoutType::CHOOSABLE {
+            for n in 2..=4 {
+                let rects = layout_rects(layout, n);
+                assert_eq!(rects.len(), n, "{layout:?} {n}");
+                let z = layout_z(layout, n);
+                let mut sorted = z.clone();
+                sorted.sort_unstable();
+                assert_eq!(sorted, (0..n as i32).collect::<Vec<_>>());
             }
         }
     }
 
     #[test]
-    fn split_preset_round_trips_through_session() {
-        let lib = PresetLibrary::default();
-        let split = lib.get("builtin-split").unwrap();
-        let mut s = session_with_roles(&[LayerRole::Source, LayerRole::Reaction1]);
-        let n = split.apply(&mut s);
-        assert_eq!(n, 2);
-        assert_eq!(s.layer(1).unwrap().rect.w, 0.5);
-        assert_eq!(s.layer(1).unwrap().rect.x, 0.0);
-        assert_eq!(s.layer(2).unwrap().rect.x, 0.5);
-        assert_eq!(s.layer(2).unwrap().z_index, 1);
-    }
-
-    #[test]
-    fn applying_preset_preserves_offsets_and_crops_are_replaced() {
-        let lib = PresetLibrary::default();
-        let grid = lib.get("builtin-grid").unwrap();
-        let mut s = session_with_roles(&[LayerRole::Source, LayerRole::Reaction1]);
-        s.layers[0].offset_us = 1_500_000;
-        s.layers[0].crop.left = 0.2;
-        grid.apply(&mut s);
-        assert_eq!(s.layers[0].offset_us, 1_500_000, "offset untouched");
-        assert_eq!(s.layers[0].crop, CropRect::none(), "crop replaced");
-    }
-
-    #[test]
-    fn capture_and_apply_round_trip() {
-        let mut s = session_with_roles(&[LayerRole::Source, LayerRole::Reaction1]);
-        s.layers[0].rect = NormalizedRect::new(0.1, 0.1, 0.4, 0.6);
-        s.layers[1].rect = NormalizedRect::new(0.5, 0.2, 0.4, 0.6);
-        s.layers[1].crop = CropRect {
-            left: 0.05,
-            ..CropRect::none()
-        };
-        s.normalize_z();
-        let p = Preset::from_session("custom-1", "Mine", &s);
-        let mut other = session_with_roles(&[LayerRole::Source, LayerRole::Reaction1]);
-        p.apply(&mut other);
-        assert_eq!(other.layers[0].rect, s.layers[0].rect);
-        assert_eq!(other.layers[1].rect, s.layers[1].rect);
-        assert_eq!(other.layers[1].crop, s.layers[1].crop);
-    }
-
-    #[test]
-    fn library_keeps_builtins_when_merging_user_presets() {
-        let mut lib = PresetLibrary::with_user(vec![Preset::new("u1", "User", vec![])]);
-        assert!(lib.get("builtin-split").is_some());
-        assert!(lib.get("u1").is_some());
-        assert!(!lib.remove("builtin-split"));
-        assert!(lib.remove("u1"));
-        assert_eq!(lib.user_presets().len(), 0);
-        lib.upsert(Preset::new("u2", "Two", vec![]));
-        assert_eq!(lib.user_presets().len(), 1);
-    }
-
-    #[test]
-    fn new_session_layouts_map_to_presets() {
-        for l in NewSessionLayout::ALL {
-            let lib = PresetLibrary::default();
-            let p = lib.get(l.preset_id()).unwrap();
-            assert!(p.roles.len() >= l.default_layer_count());
+    fn builtins_are_all_two_to_four_slots() {
+        let presets = builtin_presets();
+        assert!(presets.len() >= 4);
+        for p in &presets {
+            assert!(p.built_in);
+            assert!((2..=4).contains(&p.slot_count()), "{}", p.name);
         }
+    }
+
+    #[test]
+    fn applying_a_preset_keeps_offsets_and_names() {
+        let mut s = session_with(2);
+        s.layers[0].offset_us = 1_500_000;
+        s.layers[1].name = "Reaction 1".into();
+        let preset = builtin_presets()
+            .into_iter()
+            .find(|p| p.id == "std_side")
+            .unwrap();
+        apply_preset(&mut s, &preset);
+        assert_eq!(s.layers[0].offset_us, 1_500_000);
+        assert_eq!(s.layers[1].name, "Reaction 1");
+        assert_eq!(s.layers[0].rect, NormRect::new(0.0, 0.0, 0.5, 1.0));
+        assert_eq!(s.layers[1].rect, NormRect::new(0.5, 0.0, 0.5, 1.0));
+    }
+
+    #[test]
+    fn preset_round_trip_through_json() {
+        let mut s = session_with(3);
+        s.layers[1].crop = Crop {
+            left: 0.1,
+            ..Crop::ZERO
+        };
+        s.layers[1].opacity = 0.5;
+        s.canvas_aspect = CanvasAspect::Ratio9x16;
+        let preset = Preset::from_session("mine", &s);
+        assert_eq!(preset.slot_count(), 3);
+        assert_eq!(preset.canvas_aspect, CanvasAspect::Ratio9x16);
+        let json = serde_json::to_string(&preset).unwrap();
+        let back: Preset = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, preset);
+        assert_eq!(back.version, PRESET_VERSION);
+    }
+
+    #[test]
+    fn preset_from_session_records_paint_order() {
+        let mut s = session_with(2);
+        s.layers[0].z_index = 7;
+        s.layers[1].z_index = 3;
+        let preset = Preset::from_session("order", &s);
+        // Slot order follows paint order: layer 1 (z=3) first.
+        assert_eq!(preset.slots[0].rect, s.layers[1].rect);
+        assert_eq!(preset.slots[0].z_index, 0);
+        assert_eq!(preset.slots[1].z_index, 1);
     }
 }

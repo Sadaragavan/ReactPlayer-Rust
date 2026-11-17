@@ -1,494 +1,582 @@
-//! On-disk persistence.
+//! Persistence: sessions, presets and preferences as versioned JSON in the
+//! platform's config and data directories (on Arch: `~/.config/reaction-player`
+//! and `~/.local/share/reaction-player`).
 //!
-//! Layout (Arch Linux, per the spec):
-//!
-//! * config: `~/.config/reaction-player`
-//! * data:   `~/.local/share/reaction-player`
-//!
-//! Sessions are `data/sessions/<id>.json`, presets live in
-//! `config/presets.json`, preferences in `config/preferences.json`, session
-//! thumbnails in `data/thumbnails/<id>.png` and demo clips in `data/demo/`.
-//!
-//! All documents are wrapped in a small envelope carrying a `version` field,
-//! and unknown fields are ignored on load so newer files degrade gracefully.
+//! Every file carries a `version` field. A file written by a newer build is
+//! refused with a clear error instead of being half-understood; a file from an
+//! older build loads with defaults for the fields it does not have.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
-use serde::de::DeserializeOwned;
+use directories::ProjectDirs;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
-use crate::error::{AppError, AppResult};
+use super::presets::{PRESET_VERSION, Preset};
+use super::session::{SESSION_VERSION, Session, new_id, now_ms};
+use super::settings::{SETTINGS_VERSION, Settings};
 
-use super::presets::{Preset, PresetLibrary};
-use super::session::{Session, SessionSummary, SCHEMA_VERSION};
-use super::settings::Settings;
+/// Largest thumbnail edge, in pixels.
+pub const THUMBNAIL_MAX: u32 = 480;
 
-/// A versioned JSON envelope.
-#[derive(Debug, Serialize)]
-struct Envelope<'a, T> {
-    version: u32,
-    #[serde(flatten)]
-    body: &'a T,
-}
-
-/// Locations used by the application.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AppPaths {
-    /// Directory for user-editable JSON (preferences, presets).
-    pub config_dir: PathBuf,
-    /// Directory for media, thumbnails and sessions.
-    pub data_dir: PathBuf,
-}
-
-impl AppPaths {
-    /// Build from `directories::ProjectDirs`, honouring the documented layout.
-    pub fn discover() -> AppResult<Self> {
-        let dirs = directories::ProjectDirs::from("dev", "reaction", "reaction-player")
-            .ok_or_else(|| AppError::new("Could not determine the OS data directories"))?;
-        // On Linux ProjectDirs::from yields exactly
-        // `~/.config/reaction-player` and `~/.local/share/reaction-player`.
-        Ok(Self {
-            config_dir: dirs.config_dir().to_path_buf(),
-            data_dir: dirs.data_dir().to_path_buf(),
-        })
-    }
-
-    /// Explicit paths (used by tests and by `--data-dir` overrides).
-    pub fn new(config_dir: impl Into<PathBuf>, data_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            config_dir: config_dir.into(),
-            data_dir: data_dir.into(),
-        }
-    }
-
-    /// `config/preferences.json`
-    pub fn preferences_file(&self) -> PathBuf {
-        self.config_dir.join("preferences.json")
-    }
-
-    /// `config/presets.json`
-    pub fn presets_file(&self) -> PathBuf {
-        self.config_dir.join("presets.json")
-    }
-
-    /// `data/sessions`
-    pub fn sessions_dir(&self) -> PathBuf {
-        self.data_dir.join("sessions")
-    }
-
-    /// `data/sessions/<id>.json`
-    pub fn session_file(&self, id: &str) -> PathBuf {
-        self.sessions_dir().join(format!("{}.json", sanitize_id(id)))
-    }
-
-    /// `data/thumbnails`
-    pub fn thumbnails_dir(&self) -> PathBuf {
-        self.data_dir.join("thumbnails")
-    }
-
-    /// `data/thumbnails/<id>.png`
-    pub fn thumbnail_file(&self, id: &str) -> PathBuf {
-        self.thumbnails_dir().join(format!("{}.png", sanitize_id(id)))
-    }
-
-    /// `data/demo`
-    pub fn demo_dir(&self) -> PathBuf {
-        self.data_dir.join("demo")
-    }
-
-    /// Create all directories (idempotent).
-    pub fn ensure(&self) -> AppResult<()> {
-        for dir in [
-            &self.config_dir,
-            &self.data_dir,
-            &self.sessions_dir(),
-            &self.thumbnails_dir(),
-            &self.demo_dir(),
-        ] {
-            fs::create_dir_all(dir).map_err(|e| {
-                AppError::new(format!("Could not create {}: {e}", dir.display()))
-            })?;
-        }
-        Ok(())
-    }
-
-    /// Delete every file the app owns. Used by "Clear local app data".
-    pub fn clear(&self) -> AppResult<()> {
-        for dir in [
-            &self.config_dir,
-            &self.sessions_dir(),
-            &self.thumbnails_dir(),
-            &self.demo_dir(),
-        ] {
-            if dir.exists() {
-                fs::remove_dir_all(dir)
-                    .map_err(|e| AppError::new(format!("Could not clear {}: {e}", dir.display())))?;
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Keep ids alphanumeric so they are safe as file names on every OS.
-pub fn sanitize_id(id: &str) -> String {
-    let cleaned: String = id
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
-        .collect();
-    if cleaned.is_empty() {
-        "session".to_string()
-    } else {
-        cleaned
-    }
-}
-
-/// Generate a new session id from the current time.
-pub fn generate_id() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("s-{:x}-{:03}", now.as_millis(), now.subsec_millis())
-}
-
-/// File-backed store for all application state.
-#[derive(Debug, Clone)]
+/// Where everything lives on disk.
 pub struct Store {
-    /// Filesystem locations.
-    pub paths: AppPaths,
+    config: PathBuf,
+    data: PathBuf,
+}
+
+/// A row in the Load Session list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionSummary {
+    pub id: String,
+    pub name: String,
+    pub updated_at: i64,
+    /// Union timeline length in microseconds.
+    pub duration_us: i64,
+    pub layer_count: usize,
+    /// Layers whose local file is gone.
+    pub missing_media: usize,
+    pub thumbnail: Option<PathBuf>,
+}
+
+#[derive(Serialize, serde::Deserialize)]
+struct PresetFile {
+    version: u32,
+    #[serde(default)]
+    presets: Vec<Preset>,
 }
 
 impl Store {
-    /// Create a store, ensuring every directory exists.
-    pub fn open(paths: AppPaths) -> AppResult<Self> {
-        paths.ensure()?;
-        Ok(Self { paths })
+    /// The real locations for this user, from the XDG variables on Linux.
+    pub fn open() -> Result<Self, String> {
+        let dirs = ProjectDirs::from("", "", "reaction-player")
+            .ok_or_else(|| "could not determine the user's config directory".to_owned())?;
+        Ok(Self::at(dirs.config_dir().to_path_buf(), dirs.data_dir().to_path_buf()))
     }
 
-    /// Open with paths discovered from the OS.
-    pub fn discover() -> AppResult<Self> {
-        Self::open(AppPaths::discover()?)
-    }
-
-    // ---------------------------------------------------------------- JSON
-
-    /// Write a versioned JSON document atomically (write to `.tmp`, rename).
-    ///
-    /// The `version` key is injected by the envelope. Types that already carry
-    /// their own `version` field (`Session`) must use [`Self::write_json_plain`]
-    /// instead, otherwise the flattened envelope would duplicate the key and
-    /// fail to deserialize.
-    pub fn write_json<T: Serialize>(&self, path: &Path, value: &T) -> AppResult<()> {
-        let envelope = Envelope {
-            version: SCHEMA_VERSION,
-            body: value,
-        };
-        self.write_json_plain(path, &envelope)
-    }
-
-    /// Write a JSON document exactly as given (no extra `version` key).
-    ///
-    /// Used for [`Session`], which serializes its own `version`.
-    pub fn write_json_plain<T: Serialize>(&self, path: &Path, value: &T) -> AppResult<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+    /// An explicit pair of roots, used by tests and by `--data-dir`.
+    pub fn at(config: impl Into<PathBuf>, data: impl Into<PathBuf>) -> Self {
+        Self {
+            config: config.into(),
+            data: data.into(),
         }
-        let json = serde_json::to_vec_pretty(value)?;
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, json)?;
-        fs::rename(&tmp, path)?;
-        Ok(())
     }
 
-    /// Read a JSON document, ignoring unknown fields and repairing nothing.
-    pub fn read_json<T: DeserializeOwned>(&self, path: &Path) -> AppResult<T> {
-        let bytes = fs::read(path)?;
-        let value = serde_json::from_slice(&bytes)?;
-        Ok(value)
+    pub fn config_dir(&self) -> &Path {
+        &self.config
     }
 
-    // ------------------------------------------------------------ settings
+    pub fn data_dir(&self) -> &Path {
+        &self.data
+    }
 
-    /// Load preferences, falling back to defaults when absent or corrupt.
+    pub fn sessions_dir(&self) -> PathBuf {
+        self.data.join("sessions")
+    }
+
+    pub fn thumbnails_dir(&self) -> PathBuf {
+        self.data.join("thumbnails")
+    }
+
+    /// Where the demo clips are generated and read from.
+    pub fn demo_dir(&self) -> PathBuf {
+        self.data.join("demo")
+    }
+
+    pub fn settings_path(&self) -> PathBuf {
+        self.config.join("preferences.json")
+    }
+
+    pub fn presets_path(&self) -> PathBuf {
+        self.config.join("presets.json")
+    }
+
+    fn session_path(&self, id: &str) -> PathBuf {
+        self.sessions_dir().join(format!("{id}.json"))
+    }
+
+    // ---- preferences ---------------------------------------------------
+
+    /// Preferences, or the defaults when the file is missing or unreadable.
     pub fn load_settings(&self) -> Settings {
-        match self.read_json::<Settings>(&self.paths.preferences_file()) {
-            Ok(s) => Settings {
-                preferences: s.preferences.sanitized(),
-            },
+        let path = self.settings_path();
+        match read_json::<Settings>(&path) {
+            Ok(settings) => {
+                if settings.version > SETTINGS_VERSION {
+                    return Settings::default();
+                }
+                settings.sanitized()
+            }
             Err(_) => Settings::default(),
         }
     }
 
-    /// Persist preferences.
-    pub fn save_settings(&self, settings: &Settings) -> AppResult<()> {
-        self.write_json(&self.paths.preferences_file(), settings)
+    pub fn save_settings(&self, settings: &Settings) -> Result<(), String> {
+        let settings = settings.clone().sanitized();
+        write_json(&self.settings_path(), &settings)
     }
 
-    // -------------------------------------------------------------- presets
+    // ---- presets -------------------------------------------------------
 
-    /// Load the preset library (built-ins + user presets).
-    pub fn load_presets(&self) -> PresetLibrary {
-        #[derive(serde::Deserialize)]
-        struct Doc {
-            #[serde(default)]
-            presets: Vec<Preset>,
-        }
-        match self.read_json::<Doc>(&self.paths.presets_file()) {
-            Ok(doc) => PresetLibrary::with_user(doc.presets),
-            Err(_) => PresetLibrary::default(),
+    /// Only the user's own presets; the built-ins are compiled in.
+    pub fn load_custom_presets(&self) -> Vec<Preset> {
+        match read_json::<PresetFile>(&self.presets_path()) {
+            Ok(file) if file.version <= PRESET_VERSION => {
+                let mut presets: Vec<Preset> =
+                    file.presets.into_iter().filter(|p| !p.built_in).collect();
+                presets.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                presets
+            }
+            _ => Vec::new(),
         }
     }
 
-    /// Persist only the user presets.
-    pub fn save_presets(&self, library: &PresetLibrary) -> AppResult<()> {
-        #[derive(serde::Serialize)]
-        struct Doc {
-            version: u32,
-            presets: Vec<Preset>,
-        }
-        // The version is also written by `write_json`'s envelope; a duplicated
-        // key would be a serde error, so write this document directly.
-        let doc = Doc {
-            version: SCHEMA_VERSION,
-            presets: library.user_presets(),
+    pub fn save_custom_presets(&self, presets: &[Preset]) -> Result<(), String> {
+        let file = PresetFile {
+            version: PRESET_VERSION,
+            presets: presets.iter().filter(|p| !p.built_in).cloned().collect(),
         };
-        if let Some(parent) = self.paths.presets_file().parent() {
-            fs::create_dir_all(parent)?;
+        write_json(&self.presets_path(), &file)
+    }
+
+    // ---- sessions ------------------------------------------------------
+
+    pub fn list_sessions(&self) -> Vec<SessionSummary> {
+        let dir = self.sessions_dir();
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(session) = self.load_session_file(&path) else {
+                continue;
+            };
+            out.push(SessionSummary {
+                thumbnail: session
+                    .thumbnail
+                    .as_deref()
+                    .map(|name| self.data.join(name))
+                    .filter(|p| p.exists()),
+                id: session.id.clone(),
+                name: session.name.clone(),
+                updated_at: session.updated_at,
+                duration_us: session.union().duration_us(),
+                layer_count: session.layers.len(),
+                missing_media: session.missing_media().len(),
+            });
         }
-        let json = serde_json::to_vec_pretty(&doc)?;
-        let path = self.paths.presets_file();
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, json)?;
-        fs::rename(&tmp, path)?;
-        Ok(())
+        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        out
     }
 
-    // ------------------------------------------------------------- sessions
-
-    /// Save a session. Updates `modified_unix`.
-    pub fn save_session(&self, session: &Session) -> AppResult<()> {
-        let mut s = session.clone();
-        s.modified_unix = super::session::now_unix();
-        // `Session` carries its own `version` field; writing it through the
-        // envelope would emit `version` twice.
-        self.write_json_plain(&self.paths.session_file(&s.id), &s)
+    pub fn load_session(&self, id: &str) -> Result<Session, String> {
+        self.load_session_file(&self.session_path(id))
     }
 
-    /// Load a session by id.
-    pub fn load_session(&self, id: &str) -> AppResult<Session> {
-        let mut s = self.read_json::<Session>(&self.paths.session_file(id))?;
-        s.sanitize();
-        Ok(s)
+    fn load_session_file(&self, path: &Path) -> Result<Session, String> {
+        let session: Session = read_json(path)?;
+        if session.version > SESSION_VERSION {
+            return Err(format!(
+                "{} was written by a newer version of Reaction Player (format {}, this build reads {})",
+                session.name, session.version, SESSION_VERSION
+            ));
+        }
+        Ok(session)
     }
 
-    /// Delete a session and its thumbnail.
-    pub fn delete_session(&self, id: &str) -> AppResult<()> {
-        let path = self.paths.session_file(id);
+    /// Save, creating directories as needed and stamping `updated_at`.
+    pub fn save_session(&self, session: &mut Session) -> Result<(), String> {
+        session.touch();
+        session.version = SESSION_VERSION;
+        write_json(&self.session_path(&session.id), session)
+    }
+
+    pub fn delete_session(&self, id: &str) -> Result<(), String> {
+        let path = self.session_path(id);
         if path.exists() {
-            fs::remove_file(&path)?;
+            fs::remove_file(&path).map_err(|e| format!("could not delete {}: {e}", path.display()))?;
         }
-        let thumb = self.paths.thumbnail_file(id);
+        let thumb = self.thumbnails_dir().join(format!("{id}.png"));
         if thumb.exists() {
             let _ = fs::remove_file(thumb);
         }
         Ok(())
     }
 
-    /// List sessions, newest first. Corrupt files are skipped.
-    pub fn list_sessions(&self) -> Vec<SessionSummary> {
-        let mut out = Vec::new();
-        let dir = self.paths.sessions_dir();
-        let Ok(entries) = fs::read_dir(&dir) else {
-            return out;
+    /// Write a standalone `.rplay.json` that another machine can import.
+    pub fn export_session(&self, session: &Session, path: &Path) -> Result<(), String> {
+        write_json(path, session)
+    }
+
+    /// Read a `.rplay.json`. Ids are kept; collisions are the caller's problem
+    /// (imports land as new files named after the imported id).
+    pub fn import_session(&self, path: &Path) -> Result<Session, String> {
+        let mut session: Session = read_json(path)?;
+        if session.version > SESSION_VERSION {
+            return Err(format!(
+                "that layout file uses format {}, this build reads {}",
+                session.version, SESSION_VERSION
+            ));
+        }
+        if session.id.is_empty() {
+            session.id = new_id("session");
+        }
+        session.version = SESSION_VERSION;
+        Ok(session)
+    }
+
+    // ---- thumbnails ----------------------------------------------------
+
+    /// Store a PNG thumbnail for `id` and return the path to remember in the
+    /// session.
+    pub fn save_thumbnail(
+        &self,
+        id: &str,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> Result<Option<String>, String> {
+        if width == 0 || height == 0 || rgba.len() < (width as usize * height as usize * 4) {
+            return Err("thumbnail has no pixels".to_owned());
+        }
+        let image = image::RgbaImage::from_raw(width, height, rgba.to_vec())
+            .ok_or_else(|| "thumbnail buffer has the wrong size".to_owned())?;
+        let scale = (THUMBNAIL_MAX as f32 / width.max(height) as f32).min(1.0);
+        let thumb = if scale < 1.0 {
+            image::imageops::resize(
+                &image,
+                ((width as f32 * scale) as u32).max(1),
+                ((height as f32 * scale) as u32).max(1),
+                image::imageops::FilterType::Triangle,
+            )
+        } else {
+            image
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            match self.read_json::<Session>(&path) {
-                Ok(s) => out.push(s.summary()),
-                Err(_) => continue,
+        let dir = self.thumbnails_dir();
+        fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+        let path = dir.join(format!("{id}.png"));
+        thumb
+            .save_with_format(&path, image::ImageFormat::Png)
+            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        Ok(Some(format!("thumbnails/{id}.png")))
+    }
+
+    /// Absolute path of a remembered thumbnail name.
+    pub fn thumbnail_path(&self, name: &str) -> PathBuf {
+        self.data.join(name)
+    }
+
+    // ---- lifecycle -----------------------------------------------------
+
+    /// Remove sessions, presets, preferences and generated demo media. The
+    /// caller is expected to have asked first.
+    pub fn clear_all(&self) -> Result<(), String> {
+        remove_dir_contents(&self.sessions_dir())?;
+        remove_dir_contents(&self.thumbnails_dir())?;
+        remove_dir_contents(&self.demo_dir())?;
+        for path in [self.settings_path(), self.presets_path()] {
+            if path.exists() {
+                fs::remove_file(&path)
+                    .map_err(|e| format!("could not delete {}: {e}", path.display()))?;
             }
         }
-        out.sort_by(|a, b| b.modified_unix.cmp(&a.modified_unix));
-        out
-    }
-
-    /// Duplicate a session under a new id and name.
-    pub fn duplicate_session(&self, id: &str) -> AppResult<Session> {
-        let mut s = self.load_session(id)?;
-        s.id = generate_id();
-        s.name = format!("{} copy", s.name);
-        s.created_unix = super::session::now_unix();
-        s.thumbnail = None;
-        self.save_session(&s)?;
-        Ok(s)
-    }
-
-    /// Export a session as a standalone `.rplay.json` file.
-    pub fn export_session(&self, session: &Session, dest: &Path) -> AppResult<()> {
-        // Session already contains its "version" field.
-        let json = serde_json::to_vec_pretty(session)?;
-        fs::write(dest, json)?;
         Ok(())
     }
 
-    /// Import a `.rplay.json` file, assigning a fresh id so it never
-    /// overwrites an existing session.
-    pub fn import_session(&self, src: &Path) -> AppResult<Session> {
-        let bytes = fs::read(src)?;
-        let mut s: Session = serde_json::from_slice(&bytes)?;
-        s.id = generate_id();
-        s.thumbnail = None;
-        s.modified_unix = super::session::now_unix();
-        s.sanitize();
-        self.save_session(&s)?;
-        Ok(s)
-    }
-
-    /// Save a thumbnail PNG for a session and record it in the session file.
-    pub fn save_thumbnail(&self, session_id: &str, png_path: &Path) -> AppResult<String> {
-        let dest = self.paths.thumbnail_file(session_id);
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
+    /// Every file the app knows about, for the "clear data" confirmation.
+    pub fn usage(&self) -> (usize, u64) {
+        let mut files = 0;
+        let mut bytes = 0;
+        for dir in [
+            self.sessions_dir(),
+            self.thumbnails_dir(),
+            self.demo_dir(),
+            self.config.clone(),
+        ] {
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    if let Ok(meta) = entry.metadata() {
+                        files += 1;
+                        bytes += meta.len();
+                    }
+                }
+            }
         }
-        fs::copy(png_path, &dest)?;
-        Ok(format!("{}.png", sanitize_id(session_id)))
+        (files, bytes)
     }
+}
+
+/// Milliseconds-based "now" for the summary list.
+pub fn timestamp_now() -> i64 {
+    now_ms()
+}
+
+fn remove_dir_contents(dir: &Path) -> Result<(), String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let result = if path.is_dir() {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        };
+        result.map_err(|e| format!("could not delete {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    serde_json::from_str(&text).map_err(|e| format!("could not parse {}: {e}", path.display()))
+}
+
+/// Write pretty JSON through a temporary file so a crash cannot leave a
+/// truncated document behind.
+fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    }
+    let mut text = serde_json::to_string_pretty(value)
+        .map_err(|e| format!("could not serialize for {}: {e}", path.display()))?;
+    text.push('\n');
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, text.as_bytes()).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
+    match fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            Err(format!("could not replace {}: {e}", path.display()))
+        }
+    }
+}
+
+/// True when the store has never written anything (first run).
+pub fn is_first_run(store: &Store) -> bool {
+    !store.settings_path().exists() && store.list_sessions().is_empty()
+}
+
+/// `io::Error` to message, used by the demo generator.
+pub fn io_message(context: &str, error: io::Error) -> String {
+    format!("{context}: {error}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::layout::CanvasAspect;
-    use crate::model::session::{HardwareAccel, LayerConfig, LayerRole};
-    use crate::model::geom::NormalizedRect;
+    use crate::model::geom::{NormRect, Point};
+    use crate::model::session::{Layer, MediaSource, Role};
 
-    fn temp_store(name: &str) -> Store {
-        let base = std::env::temp_dir().join(format!(
-            "reaction-player-test-{}-{}",
-            name,
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&base);
-        Store::open(AppPaths::new(base.join("config"), base.join("data"))).unwrap()
+    fn temp_root(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("reaction-player-store-{tag}-{}", new_id("t")))
     }
 
-    fn sample() -> Session {
-        let mut s = Session::new("sess-a", "My Session", CanvasAspect::Widescreen);
-        s.layers.push(LayerConfig::new(
-            1,
+    fn store(tag: &str) -> (Store, PathBuf) {
+        let root = temp_root(tag);
+        (
+            Store::at(root.join("config"), root.join("data")),
+            root,
+        )
+    }
+
+    fn session(name: &str) -> Session {
+        let mut s = Session::new(name);
+        let mut a = Layer::new(
             "Source",
-            LayerRole::Source,
-            "/tmp/a.mp4",
-            NormalizedRect::full(),
+            Role::Source,
+            MediaSource::file("/tmp/source.mp4"),
+            NormRect::FULL,
             0,
-        ));
-        s.sanitize();
+        );
+        a.duration_us = 10_000_000;
+        a.has_audio = true;
+        let mut b = Layer::new(
+            "Reaction 1",
+            Role::Reaction,
+            MediaSource::file("/tmp/reaction.mp4"),
+            NormRect::new(0.5, 0.0, 0.5, 1.0),
+            1,
+        );
+        b.duration_us = 12_000_000;
+        b.offset_us = 1_500_000;
+        s.layers.push(a);
+        s.layers.push(b);
+        s.master_audio = Some(s.layers[0].id.clone());
         s
     }
 
     #[test]
-    fn paths_follow_xdg_layout() {
-        let p = AppPaths::new("/home/u/.config/reaction-player", "/home/u/.local/share/reaction-player");
-        assert_eq!(
-            p.preferences_file(),
-            PathBuf::from("/home/u/.config/reaction-player/preferences.json")
-        );
-        assert_eq!(
-            p.demo_dir(),
-            PathBuf::from("/home/u/.local/share/reaction-player/demo")
-        );
-    }
-
-    #[test]
-    fn session_round_trip_on_disk() {
-        let store = temp_store("session");
-        let s = sample();
-        store.save_session(&s).unwrap();
-        let back = store.load_session("sess-a").unwrap();
-        assert_eq!(back.name, "My Session");
-        assert_eq!(back.layers.len(), 1);
-        let list = store.list_sessions();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].id, "sess-a");
-    }
-
-    #[test]
-    fn delete_session_removes_file() {
-        let store = temp_store("delete");
-        store.save_session(&sample()).unwrap();
-        assert!(store.paths.session_file("sess-a").exists());
-        store.delete_session("sess-a").unwrap();
-        assert!(!store.paths.session_file("sess-a").exists());
-        assert!(store.list_sessions().is_empty());
-    }
-
-    #[test]
-    fn settings_and_presets_round_trip() {
-        let store = temp_store("settings");
+    fn settings_round_trip_through_disk() {
+        let (store, root) = store("settings");
         let mut settings = Settings::default();
-        settings.preferences.hardware = HardwareAccel::SoftwareOnly;
-        settings.preferences.seek_step_ms = 2_000;
+        settings.hw_accel = crate::model::settings::HwAccelPref::SoftwareOnly;
+        settings.seek_step_ms = 2_000;
+        settings.snap_sensitivity_px = 12.0;
         store.save_settings(&settings).unwrap();
+        assert!(store.settings_path().exists());
+        assert!(is_first_run(&store) == false);
         let back = store.load_settings();
-        assert_eq!(back, settings);
-
-        let mut lib = store.load_presets();
-        lib.upsert(Preset::new(
-            "custom",
-            "Custom",
-            vec![crate::model::PresetRole {
-                role: LayerRole::Source,
-                rect: NormalizedRect::full(),
-                crop: Default::default(),
-                opacity: 1.0,
-                fit: Default::default(),
-                z_index: 0,
-            }],
-        ));
-        store.save_presets(&lib).unwrap();
-        let back = store.load_presets();
-        assert!(back.get("custom").is_some());
-        assert!(back.get("builtin-split").is_some());
+        assert_eq!(back.hw_accel, settings.hw_accel);
+        assert_eq!(back.seek_step_ms, 2_000);
+        assert_eq!(back.snap_sensitivity_px, 12.0);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn export_import_assigns_new_id() {
-        let store = temp_store("export");
-        let s = sample();
-        let dest = std::env::temp_dir().join(format!("rplay-export-{}.rplay.json", std::process::id()));
-        store.export_session(&s, &dest).unwrap();
-        let imported = store.import_session(&dest).unwrap();
-        assert_ne!(imported.id, s.id);
-        assert_eq!(imported.name, s.name);
-        let _ = fs::remove_file(dest);
-    }
-
-    #[test]
-    fn corrupt_session_files_are_skipped() {
-        let store = temp_store("corrupt");
-        store.save_session(&sample()).unwrap();
-        fs::write(store.paths.sessions_dir().join("broken.json"), b"{not json").unwrap();
-        let list = store.list_sessions();
-        assert_eq!(list.len(), 1);
-    }
-
-    #[test]
-    fn clear_removes_everything() {
-        let store = temp_store("clear");
-        store.save_session(&sample()).unwrap();
-        store.save_settings(&Settings::default()).unwrap();
-        store.paths.clear().unwrap();
-        assert!(!store.paths.sessions_dir().exists());
+    fn missing_preferences_are_defaults_not_errors() {
+        let (store, root) = store("missing");
+        assert_eq!(store.load_settings(), Settings::default());
         assert!(store.list_sessions().is_empty());
+        assert!(store.load_custom_presets().is_empty());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn ids_are_sanitized() {
-        assert_eq!(sanitize_id("a/b c"), "a-b-c");
-        assert_eq!(sanitize_id(""), "session");
-        assert!(generate_id().starts_with("s-"));
+    fn session_round_trip_keeps_every_field() {
+        let (store, root) = store("session");
+        let mut original = session("My Session");
+        store.save_session(&mut original).unwrap();
+        let loaded = store.load_session(&original.id).unwrap();
+        assert_eq!(loaded, original);
+        assert_eq!(loaded.layers[1].offset_us, 1_500_000);
+        assert_eq!(loaded.layers[1].z_index, 1);
+        assert_eq!(loaded.union().duration_us(), 12_000_000);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn session_list_is_sorted_newest_first() {
+        let (store, root) = store("list");
+        let mut a = session("older");
+        a.updated_at = 1_000;
+        store.save_session(&mut a).unwrap();
+        let mut b = session("newer");
+        store.save_session(&mut b).unwrap();
+        let list = store.list_sessions();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].name, "newer");
+        assert_eq!(list[0].layer_count, 2);
+        assert_eq!(list[1].duration_us, 12_000_000);
+        assert_eq!(list[0].missing_media, 1); // /tmp/reaction.mp4 is not there
+        store.delete_session(&b.id).unwrap();
+        assert_eq!(store.list_sessions().len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn export_and_import_round_trip() {
+        let (store, root) = store("export");
+        let original = session("Travelling");
+        let export = root.join("Travelling.rplay.json");
+        store.export_session(&original, &export).unwrap();
+        let back = store.import_session(&export).unwrap();
+        assert_eq!(back.name, "Travelling");
+        assert_eq!(back.layers.len(), 2);
+        assert_eq!(back.master_audio, original.master_audio);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn newer_files_are_refused_with_a_clear_error() {
+        let (store, root) = store("version");
+        let mut s = session("future");
+        s.version = SESSION_VERSION + 1;
+        let path = store.sessions_dir().join(format!("{}.json", s.id));
+        write_json(&path, &s).unwrap();
+        let err = store.load_session(&s.id).unwrap_err();
+        assert!(err.contains("newer version"), "{err}");
+
+        let mut file = PresetFile {
+            version: PRESET_VERSION + 1,
+            presets: Vec::new(),
+        };
+        write_json(&store.presets_path(), &file).unwrap();
+        assert!(store.load_custom_presets().is_empty());
+        file.version = PRESET_VERSION;
+        write_json(&store.presets_path(), &file).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn custom_presets_are_persisted_by_name() {
+        let (store, root) = store("presets");
+        let s = session("p");
+        let mut b = Preset::from_session("Beta", &s);
+        let a = Preset::from_session("Alpha", &s);
+        b.created_at = 0;
+        store.save_custom_presets(&[b, a]).unwrap();
+        let loaded = store.load_custom_presets();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].name, "Alpha");
+        assert_eq!(loaded[1].name, "Beta");
+        assert_eq!(loaded[0].version, PRESET_VERSION);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn thumbnails_are_written_as_png() {
+        let (store, root) = store("thumb");
+        let (w, h) = (8u32, 4u32);
+        let rgba = vec![255u8; (w * h * 4) as usize];
+        let name = store.save_thumbnail("sess-1", w, h, &rgba).unwrap().unwrap();
+        assert_eq!(name, "thumbnails/sess-1.png");
+        let path = store.thumbnail_path(&name);
+        assert!(path.exists());
+        let decoded = image::open(&path).unwrap();
+        assert_eq!(decoded.width(), 8);
+        assert!(store.save_thumbnail("empty", 0, 0, &[]).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clear_all_removes_data_but_keeps_the_root() {
+        let (store, root) = store("clear");
+        let mut s = session("gone");
+        store.save_session(&mut s).unwrap();
+        store.save_settings(&Settings::default()).unwrap();
+        store.save_custom_presets(&[Preset::from_session("x", &s)]).unwrap();
+        assert!(store.usage().0 > 0);
+        store.clear_all().unwrap();
+        assert!(store.list_sessions().is_empty());
+        assert!(store.load_custom_presets().is_empty());
+        assert!(!store.settings_path().exists());
+        assert!(root.join("config").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn importing_a_file_without_an_id_mints_one() {
+        let (store, root) = store("noid");
+        let mut s = session("anon");
+        s.id = String::new();
+        let path = root.join("anon.rplay.json");
+        write_json(&path, &s).unwrap();
+        let back = store.import_session(&path).unwrap();
+        assert!(!back.id.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn session_survives_a_layout_round_trip() {
+        let (store, root) = store("layout");
+        let mut s = session("layout");
+        s.layers[1].rect = NormRect::new(0.1, 0.2, 0.3, 0.4);
+        s.layers[1].crop = crate::model::geom::Crop {
+            left: 0.05,
+            bottom: 0.1,
+            ..crate::model::geom::Crop::ZERO
+        };
+        store.save_session(&mut s).unwrap();
+        let back = store.load_session(&s.id).unwrap();
+        assert!(back.layers[1].rect.contains(Point { x: 0.2, y: 0.3 }));
+        assert!((back.layers[1].crop.uv()[0] - 0.05).abs() < 1e-6);
     }
 }

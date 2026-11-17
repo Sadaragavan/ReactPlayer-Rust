@@ -19,3 +19,7 @@ vendor/
 # Generated demo media and local session data
 /demo/
 *.rplay.json
+
+# CI run reports (written by .github/workflows/ci.yml)
+ci-log.txt
+ci-report.txt

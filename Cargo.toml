@@ -2,6 +2,7 @@
 name = "reaction-player"
 version = "0.1.0"
 edition = "2024"
+# egui/eframe 0.37 is the real floor: it declares rust-version 1.95 itself.
 rust-version = "1.95"
 description = "Frame-accurate multi-stream video reaction player and alignment tool"
 license = "MIT OR Apache-2.0"
@@ -12,8 +13,8 @@ categories = ["multimedia::video"]
 default-run = "reaction-player"
 
 [dependencies]
-# UI / GPU. eframe re-exports egui, egui_wgpu and wgpu; we must not depend on
-# those crates directly or we would end up with duplicate-type conflicts.
+# UI / GPU. eframe re-exports egui, egui_wgpu and wgpu; those crates are never
+# depended on directly, so there is exactly one copy of each type in the graph.
 eframe = { version = "0.37", default-features = false, features = [
     "default_fonts",
     "wayland",
@@ -22,19 +23,16 @@ eframe = { version = "0.37", default-features = false, features = [
 ] }
 bytemuck = { version = "1.25", features = ["derive"] }
 
-# Media: the crate major version tracks the system FFmpeg major version.
-# ffmpeg-next 9.x == FFmpeg 9.x (libavcodec >= 63.1). See README "FFmpeg pairing".
+# Media. The crate majors track the system FFmpeg major: 9.x <-> libavcodec 63.
 ffmpeg-next = "9.1"
 ffmpeg-sys-next = "9.1"
 
-# Audio
-# cpal 0.19 is unreleased (the 0.19 API exists only on their main branch);
-# 0.18.2 is the newest published release.
+# Audio: one lock-free SPSC ring buffer per track, mixed in a single callback.
 cpal = "0.18"
 ringbuf = "0.6"
 
-# OS / persistence
-arboard = { version = "2.0", default-features = false, features = ["image-data"] }
+# OS integration and persistence.
+arboard = { version = "3.7", default-features = false, features = ["image-data"] }
 rfd = "0.18"
 directories = "6.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -42,11 +40,16 @@ serde_json = "1.0"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# Wayland data-control protocol gives a real clipboard on wlroots/sway etc.
-arboard = { version = "2.0", default-features = false, features = [
+# Wayland data-control gives a working clipboard under wlroots/sway.
+arboard = { version = "3.7", default-features = false, features = [
     "image-data",
     "wayland-data-control",
 ] }
+
+[dev-dependencies]
+# Same naga as wgpu 30, used by tests to parse `src/gpu/shader.wgsl` so a broken
+# shader fails `cargo test` instead of failing at runtime.
+naga = { version = "30.0", features = ["wgsl-in"] }
 
 [profile.release]
 opt-level = 3
@@ -60,5 +63,5 @@ opt-level = 1
 opt-level = 2
 
 [lints.rust]
-unsafe_op_in_unsafe_fn = "warn"
-unused_must_use = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"

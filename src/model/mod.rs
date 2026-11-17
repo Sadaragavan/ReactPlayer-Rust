@@ -1,30 +1,18 @@
-//! Pure, testable domain model: sessions, layers, presets, preferences.
+//! Sessions, layers, layouts, preferences and their on-disk form.
 //!
-//! Nothing in this module touches FFmpeg, wgpu, cpal or egui, so it can be
-//! unit-tested on any machine. All persisted structures carry a `version`
-//! field for forward compatibility.
+//! Pure data and pure functions: no decoder, no GPU, no window. Everything here
+//! is unit-tested without one.
 
 pub mod geom;
-pub mod layout;
 pub mod presets;
 pub mod session;
 pub mod settings;
-pub mod timeline;
 pub mod store;
+pub mod timeline;
 
-#[allow(unused_imports)]
-pub use geom::{snap_value, CropRect, Handle, NormalizedRect, PixelRect, Size};
-#[allow(unused_imports)]
-pub use layout::{aspect_ratios_close, fit_rect, layer_pixel_rect, CanvasAspect, FitMode};
-#[allow(unused_imports)]
-pub use presets::{Preset, PresetLibrary, PresetRole};
-#[allow(unused_imports)]
-pub use session::{
-    HardwareAccel, LayerConfig, LayerRole, Session, SessionSummary, SCHEMA_VERSION,
-};
-#[allow(unused_imports)]
-pub use settings::{Preferences, Settings};
-#[allow(unused_imports)]
-pub use store::{AppPaths, Store};
-#[allow(unused_imports)]
-pub use timeline::{clamp_track_time, layer_source_time_us, union_bounds, UnionBounds};
+pub use geom::{Crop, Handle, MIN_LAYER_SIZE, NormRect, Point, Size, Snap};
+pub use presets::{LayoutType, Preset, PresetSlot, apply_preset, builtin_presets, layout_rects};
+pub use session::{CanvasAspect, FitMode, Layer, MediaSource, Role, Session};
+pub use settings::{HwAccelPref, Settings};
+pub use store::{SessionSummary, Store};
+pub use timeline::{DriftClass, Target, Union, classify_drift, target_of, union_of};
