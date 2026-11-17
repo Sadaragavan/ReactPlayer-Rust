@@ -810,14 +810,12 @@ impl App {
                     let playing = self.runtime.as_ref().map(|r| r.is_playing()).unwrap_or(false);
                     let step_us = self.settings.seek_step_us();
                     let union = self.session.as_ref().map(|s| s.union()).unwrap_or_default();
-                    let sign = match action {
+                    let sign: i64 = match action {
                         Action::Back | Action::BackBig => -1,
                         _ => 1,
                     };
                     match (action, playing) {
-                        (Action::Back | Action::Forward, false) => {
-                            self.step_frames(i64::from(sign))
-                        }
+                        (Action::Back | Action::Forward, false) => self.step_frames(sign),
                         (Action::Back | Action::Forward, true) => {
                             let position = self
                                 .runtime

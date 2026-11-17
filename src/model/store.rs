@@ -428,7 +428,7 @@ mod tests {
         settings.snap_sensitivity_px = 12.0;
         store.save_settings(&settings).unwrap();
         assert!(store.settings_path().exists());
-        assert!(is_first_run(&store) == false);
+        assert!(!is_first_run(&store));
         let back = store.load_settings();
         assert_eq!(back.hw_accel, settings.hw_accel);
         assert_eq!(back.seek_step_ms, 2_000);

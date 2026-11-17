@@ -1079,8 +1079,9 @@ fn display_rotation(frame: &ffmpeg::Frame) -> i32 {
         return 0;
     }
     let mut matrix = [0i32; 2];
-    for (slot, chunk) in matrix.iter_mut().zip(data.chunks_exact(4)) {
-        *slot = i32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    let (words, _) = data.as_chunks::<4>();
+    for (slot, word) in matrix.iter_mut().zip(words) {
+        *slot = i32::from_ne_bytes(*word);
     }
     let angle = -(matrix[1] as f64).atan2(matrix[0] as f64).to_degrees().round() as i32;
     match angle.rem_euclid(360) {
@@ -1234,10 +1235,8 @@ fn decode_audio_frame(
 /// Copy an audio frame's packed `f32` samples out.
 fn push_f32(frame: &ffmpeg::frame::Audio, out: &mut Vec<f32>) {
     let data = frame.data(0);
-    out.extend(
-        data.chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])),
-    );
+    let (words, _) = data.as_chunks::<4>();
+    out.extend(words.iter().map(|word| f32::from_le_bytes(*word)));
 }
 
 /// Push samples into the ring, waiting for room while staying responsive.

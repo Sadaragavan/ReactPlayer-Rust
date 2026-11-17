@@ -73,8 +73,13 @@ jobs:
           export GIT_COMMITTER_NAME=ci GIT_COMMITTER_EMAIL=ci@example.com
           git add -A && git commit -qm "pre-fix state"
           cargo clippy --fix --allow-dirty --allow-staged \
-            --all-targets --all-features 2>&1 | tail -3
+            --all-targets --all-features > /tmp/fix.out 2>&1
+          echo "fix exit: $?"
           {
+            echo
+            echo "===== clippy fix output ====="
+            tail -25 /tmp/fix.out
+            git status --short | head -20
             echo
             echo "===== fix patch ====="
             git diff

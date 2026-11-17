@@ -173,7 +173,7 @@ impl AudioEngine {
         };
 
         let sample_format = supported.sample_format();
-        let config: cpal::StreamConfig = supported.clone().into();
+        let config: cpal::StreamConfig = supported.into();
         let rate = config.sample_rate;
         let channels = config.channels;
         clock.set_sample_rate(rate);
@@ -217,10 +217,7 @@ impl AudioEngine {
                         None,
                     )
                 }
-                other => {
-                    let _ = other;
-                    return Err(cpal::Error::new(cpal::ErrorKind::UnsupportedConfig));
-                }
+                _ => Err(cpal::Error::new(cpal::ErrorKind::UnsupportedConfig)),
             }
         };
 

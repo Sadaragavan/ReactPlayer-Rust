@@ -27,7 +27,7 @@ pub const NUDGE_MAX_RATE: f64 = 1.005;
 pub const SEEK_HYSTERESIS_US: i64 = 40_000;
 
 /// One layer's footprint on the union timeline.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Span {
     pub start_us: i64,
     pub end_us: i64,
@@ -48,14 +48,6 @@ impl Span {
     }
 }
 
-impl Default for Span {
-    fn default() -> Self {
-        Self {
-            start_us: 0,
-            end_us: 0,
-        }
-    }
-}
 
 /// The whole timeline: the union of every layer's span.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

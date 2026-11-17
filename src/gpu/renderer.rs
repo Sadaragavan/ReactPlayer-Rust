@@ -690,7 +690,7 @@ mod tests {
     fn uniform_matches_shader_layout() {
         assert_eq!(std::mem::size_of::<QuadUniform>(), UNIFORM_SIZE as usize);
         assert_eq!(UNIFORM_SIZE % 16, 0);
-        assert!(crate::gpu::UNIFORM_STRIDE >= UNIFORM_SIZE);
+        const { assert!(crate::gpu::UNIFORM_STRIDE >= UNIFORM_SIZE) };
     }
 
     #[test]
