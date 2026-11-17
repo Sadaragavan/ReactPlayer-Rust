@@ -93,6 +93,11 @@ impl PlaneBuf {
         &self.data
     }
 
+    /// Mutable view, used by the decoder when it copies a plane in.
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+
     pub fn capacity(&self) -> usize {
         self.data.capacity()
     }
@@ -182,10 +187,6 @@ impl VideoFrame {
             .sum()
     }
 
-    pub fn duration_us(&self) -> i64 {
-        0
-    }
-
     fn luma(&self, x: u32, y: u32) -> f32 {
         let stride = self.strides[0];
         let idx = y as usize * stride + x as usize;
@@ -256,7 +257,7 @@ impl std::fmt::Debug for VideoFrame {
             .field("height", &self.height)
             .field("strides", &self.strides)
             .field("pts_us", &self.pts_us)
-            .field("converted", (&self.converted))
+            .field("converted", &self.converted)
             .finish()
     }
 }

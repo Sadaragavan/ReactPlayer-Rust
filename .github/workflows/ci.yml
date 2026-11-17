@@ -54,14 +54,25 @@ jobs:
             cargo check --all-targets --message-format short 2>&1 | grep -c warning
           } > ci-log.txt 2>&1
           tail -40 ci-log.txt || true
+      - name: upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-log
+          path: ci-log.txt
       - name: publish log
         if: always()
         run: |
           git config user.name ci
           git config user.email ci@localhost
           git add -f ci-log.txt
-          git commit -q -m "ci: run report [skip ci]" || exit 0
+          git commit -q -m "ci: run report [skip ci]" || true
+          git pull --rebase -q origin "$GITHUB_REF_NAME" || true
           for i in 1 2 3 4 5; do
-            if git pull --rebase -q && git push -q; then break; fi
+            if git push -q origin "HEAD:refs/heads/$GITHUB_REF_NAME"; then
+              echo "pushed"
+              break
+            fi
             sleep 5
           done
+          git log --oneline -2
