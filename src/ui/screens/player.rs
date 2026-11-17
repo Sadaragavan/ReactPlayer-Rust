@@ -1294,9 +1294,6 @@ fn layers_panel(app: &mut App, ui: &mut egui::Ui) {
                                     let _ = detail;
                                 },
                             );
-                                    });
-                                },
-                            );
                         },
                     )
                     .1;
