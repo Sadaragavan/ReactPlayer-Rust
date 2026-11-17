@@ -675,7 +675,7 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui) {
         .and_then(|session| session.master_audio.clone());
     let is_master = master.as_deref() == Some(id.as_str());
 
-    ui.label(RichText::new(name).color(theme::TEXT).size(12.5).strong());
+    ui.label(RichText::new(&name).color(theme::TEXT).size(12.5).strong());
     ui.separator();
 
     if ui.button("Copy this frame").clicked() {
@@ -782,6 +782,7 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui) {
 
     ui.separator();
     if ui.button("Reset transform").clicked() {
+        app.snapshot("Reset transform");
         if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
             layer.rect = NormRect::FULL;
             layer.crop = Crop::ZERO;
@@ -791,6 +792,9 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui) {
         ui.close();
     }
     if ui.button("Remove layer").clicked() {
+        // Removing a layer is the one menu item that destroys work, so it keeps
+        // a way back and says where that is.
+        app.snapshot("Remove layer");
         if let Some(session) = app.session.as_mut() {
             session.layers.retain(|layer| layer.id != id);
             session.normalize_z();
@@ -798,6 +802,8 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui) {
         }
         app.selection = None;
         app.sync_engine();
+        app.toasts
+            .info(format!("Removed {name}. Ctrl+Z puts it back."));
         ui.close();
     }
 }

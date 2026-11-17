@@ -202,6 +202,9 @@ pub struct App {
     /// compared. Both are `None` until something changes.
     changed_at: Option<std::time::Instant>,
     checked_at: Option<std::time::Instant>,
+    /// States worth going back to, newest last. Only the actions that cannot
+    /// be reversed by hand take one.
+    undo: Vec<(String, Session)>,
 }
 
 impl App {
@@ -249,6 +252,7 @@ impl App {
             saved_json: None,
             changed_at: None,
             checked_at: None,
+            undo: Vec::new(),
         };
         app.reload_wallpaper(&cc.egui_ctx);
         // Continue where the last run left off, on the home screen.
@@ -372,6 +376,32 @@ impl App {
         self.screen = Screen::Home;
         self.settings.last_session = None;
         self.save_settings();
+    }
+
+    /// Remember the session before an action that cannot be undone by hand.
+    pub fn snapshot(&mut self, label: &str) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        self.undo.push((label.to_owned(), session.clone()));
+        if self.undo.len() > 24 {
+            self.undo.remove(0);
+        }
+    }
+
+    /// Go back to the last remembered state.
+    pub fn undo(&mut self) {
+        let Some((label, session)) = self.undo.pop() else {
+            self.toasts.info("Nothing left to undo.");
+            return;
+        };
+        self.selection = session
+            .paint_order()
+            .last()
+            .map(|index| session.layers[*index].id.clone());
+        self.session = Some(session);
+        self.sync_engine();
+        self.toasts.info(format!("Undid {label}."));
     }
 
     /// The open session as JSON, the same bytes the store writes.
@@ -726,11 +756,14 @@ impl App {
         let Some(preset) = self.presets.iter().find(|preset| preset.id == id).cloned() else {
             return;
         };
-        let Some(session) = self.session.as_mut() else {
+        if self.session.is_none() {
             self.toasts.error("Open a session first.");
             return;
-        };
-        presets::apply_preset(session, &preset);
+        }
+        self.snapshot("that layout");
+        if let Some(session) = self.session.as_mut() {
+            presets::apply_preset(session, &preset);
+        }
         self.save_current();
         self.toasts
             .success(format!("Applied \"{}\".", preset.name));
@@ -840,6 +873,10 @@ impl App {
         ) else {
             return;
         };
+        if self.session.is_none() {
+            return;
+        }
+        self.snapshot("the alignment");
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -1507,11 +1544,27 @@ impl App {
                         );
                     });
                 }
+                // The one modified key the app claims, so it belongs on the
+                // sheet even though `shortcuts::ALL` deliberately holds none.
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [110.0, 18.0],
+                        egui::Label::new(RichText::new("Ctrl/Cmd+Z").color(theme::ACCENT).size(12.0)),
+                    );
+                    ui.label(
+                        RichText::new("undo the last layout change, removal or alignment")
+                            .color(theme::MUTED)
+                            .size(12.0),
+                    );
+                });
                 ui.add_space(8.0);
                 ui.label(
-                    RichText::new("Shortcuts pause while a text field has focus.")
-                        .color(theme::MUTED)
-                        .size(11.0),
+                    RichText::new(
+                        "Shortcuts pause while a text field has focus; every other modified \
+                         key belongs to the system.",
+                    )
+                    .color(theme::MUTED)
+                    .size(11.0),
                 );
             });
         self.sheet = open;
@@ -1578,6 +1631,13 @@ impl eframe::App for App {
         self.handle_dropped(&ctx);
         for action in shortcuts::pressed(&ctx) {
             self.apply_action(action, &ctx);
+        }
+        // Ctrl/Cmd+Z is the one modified key the app claims: everything else
+        // with a modifier belongs to the system.
+        if ctx.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Z))
+            && !ctx.wants_keyboard_input()
+        {
+            self.undo();
         }
         self.pump_engine();
         self.autosave(&ctx);

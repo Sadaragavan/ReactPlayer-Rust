@@ -182,9 +182,10 @@ session has says so in red instead of applying itself partially.
 | `P` | layers panel |
 | `Esc` | close the topmost thing, then leave the player |
 | `?` | this list |
+| `Ctrl`/`Cmd`+`Z` | undo the last removal, layout or alignment |
 
 Shortcuts are ignored while a text field has focus, and `Ctrl`/`Cmd`/`Alt`
-combinations are left alone. The whole mapping is one pure function with tests.
+combinations are left alone apart from `Ctrl`/`Cmd`+`Z`. The whole mapping is one pure function with tests.
 
 ## Data on disk
 
@@ -197,6 +198,12 @@ combinations are left alone. The whole mapping is one pure function with tests.
 
 Every JSON file carries a `"version"` field. *Settings → Local data → Clear local
 data* deletes all of it after asking, and never touches your videos.
+
+The open session saves itself about a second after you stop changing it — a
+dragged rectangle, a crop, an offset, a hidden layer all land on disk without
+pressing anything. *Save* is only needed to refresh the thumbnail and the
+session's place in the list immediately; *Remove layer*, *Reset transform*, a
+layout and an alignment also keep one step of undo.
 
 ## Demo clips
 
