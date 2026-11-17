@@ -192,9 +192,8 @@ impl AudioEngine {
             mixed: Vec::new(),
         };
 
-        let mut mixer = mixer;
         // `move`: the config and the error callback belong to the stream.
-        let build = move |mixer: Mixer| -> Result<cpal::Stream, cpal::Error> {
+        let build = move |mut mixer: Mixer| -> Result<cpal::Stream, cpal::Error> {
             let error_callback = |err: cpal::Error| {
                 eprintln!("reaction-player: audio stream error: {err}");
             };

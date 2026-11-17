@@ -91,7 +91,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                     egui::StrokeKind::Inside,
                                 );
                                 if let Some(path) = summary.thumbnail.as_ref() {
-                                    if let Some(texture) = thumbnail_texture(ctx, path) {
+                                    if let Some(texture) = thumbnail_texture(&ctx, path) {
                                         let uv = egui::Rect::from_min_max(
                                             egui::pos2(0.0, 0.0),
                                             egui::pos2(1.0, 1.0),
@@ -168,7 +168,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                     if ui.button("Open").clicked() {
                                         match app.store.load_session(&summary.id) {
                                             Ok(session) => {
-                                                app.open_session(session, ctx);
+                                                app.open_session(session, &ctx);
                                                 app.go(Screen::Player);
                                             }
                                             Err(message) => toast = Some(message),

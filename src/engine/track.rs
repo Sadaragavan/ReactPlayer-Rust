@@ -17,7 +17,7 @@ use std::ptr;
 use std::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU64, AtomicU8, Ordering,
 };
-use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, TrySendError, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -925,7 +925,7 @@ impl Decoder {
                 ffi::sws_getContext(
                     width,
                     height,
-                    format,
+                    format.into(),
                     width,
                     height,
                     ffi::AVPixelFormat::AV_PIX_FMT_YUV420P,

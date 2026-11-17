@@ -38,7 +38,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
 
-    let ctx = ui.ctx().clone();
     header(app, ui, "Alignment Studio");
 
     // ---- controls ------------------------------------------------------
