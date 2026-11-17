@@ -1082,6 +1082,17 @@ fn scrubber(
         painter.vline(x, rect.y_range(), egui::Stroke::new(1.0, theme::ACCENT));
     }
 
+    // Seeking is the one gesture worth a readout: without it the scrubber is a
+    // guess about where a pixel lands.
+    let at_pointer = response.hover_pos().map(|pos| {
+        let fraction = ((pos.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0) as f64;
+        (fraction * union.duration_us() as f64) as i64
+    });
+    let response = match at_pointer {
+        Some(at) => response.on_hover_text(widgets::timecode(at)),
+        None => response,
+    };
+
     let pointer = response.interact_pointer_pos()?;
     if response.clicked() || response.dragged() {
         let fraction = ((pointer.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
