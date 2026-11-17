@@ -678,7 +678,7 @@ impl Worker {
                 Ok((dec, backend)) => (dec, backend, false),
                 Err(_) => {
                     let mut d = ffmpeg::codec::context::Context::from_parameters(
-                        input.streams().get(video_index).unwrap().parameters(),
+                        stream_at(input, video_index).unwrap().parameters(),
                     )
                     .map_err(|e| TrackError::Open(e.to_string()))?
                     .decoder()
@@ -804,7 +804,7 @@ impl Worker {
             };
 
             let mut ctx = ffmpeg::codec::context::Context::from_parameters(
-                input.streams().get(self.video_index).unwrap().parameters(),
+                stream_at(input, self.video_index).unwrap().parameters(),
             )
             .map_err(|e| HwError::Setup(e.to_string()))?;
             // SAFETY: `ctx` has not been opened yet (avcodec_open2 happens in

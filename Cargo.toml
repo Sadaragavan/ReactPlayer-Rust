@@ -28,7 +28,9 @@ ffmpeg-next = "9.1"
 ffmpeg-sys-next = "9.1"
 
 # Audio
-cpal = "0.19"
+# cpal 0.19 is unreleased (the 0.19 API exists only on their main branch);
+# 0.18.2 is the newest published release.
+cpal = "0.18"
 ringbuf = "0.6"
 
 # OS / persistence

@@ -132,7 +132,9 @@ fn controls(app: &mut App, ui: &mut Ui) {
                     Pos2::new(c.x - 4.0, c.y + 7.0),
                 ],
                 theme::BG,
-                egui::Stroke::NONE.into(),
+                // `convex_polygon` wants `impl Into<PathStroke>`; a bare
+                // `Stroke` converts on its own, no `.into()` needed.
+                egui::Stroke::NONE,
             ));
         }
         if resp.clicked() {

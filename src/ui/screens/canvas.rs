@@ -6,7 +6,7 @@ use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec
 
 use crate::app::App;
 use crate::engine::hwaccel::DecodeBackend;
-use crate::gpu::compositor::{self, LayerPaint, PaintList};
+use crate::gpu::compositor::{self, PaintList};
 use crate::gpu::renderer::FrameUpload;
 use crate::model::layout::{fit_rect, layer_pixel_rect, FitMode};
 use crate::model::{Handle, NormalizedRect, PixelRect, Size};
