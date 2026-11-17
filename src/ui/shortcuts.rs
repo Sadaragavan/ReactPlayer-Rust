@@ -194,11 +194,9 @@ pub fn pressed(ctx: &eframe::egui::Context) -> Vec<Action> {
                 repeat: false,
                 ..
             } = event
-            {
-                if let Some(action) = action_for(*key, *modifiers) {
+                && let Some(action) = action_for(*key, *modifiers) {
                     actions.push(action);
                 }
-            }
         }
         actions
     })

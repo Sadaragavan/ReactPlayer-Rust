@@ -54,12 +54,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                 )
                                 .on_hover_text(pref.description())
                                 .clicked()
-                            {
-                                if app.settings.hw_accel != pref {
+                                && app.settings.hw_accel != pref {
                                     app.settings.hw_accel = pref;
                                     changed = true;
                                 }
-                            }
                         }
                     });
                     ui.add_space(6.0);
@@ -109,11 +107,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         app.settings.master_volume = volume;
                         changed = true;
                     }
-                    if let Some(runtime) = app.runtime.as_mut() {
-                        if changed {
+                    if let Some(runtime) = app.runtime.as_mut()
+                        && changed {
                             runtime.set_master_volume(app.settings.master_volume);
                         }
-                    }
                 });
 
                 // ---- editing ---------------------------------------

@@ -100,12 +100,11 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui) {
                     let done = response.lost_focus()
                         || ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if done {
-                        if let Some(session) = app.session.as_mut() {
-                            if !buffer.trim().is_empty() {
+                        if let Some(session) = app.session.as_mut()
+                            && !buffer.trim().is_empty() {
                                 session.name = buffer.trim().to_owned();
                                 session.touch();
                             }
-                        }
                         app.renaming = None;
                         app.save_current();
                     } else {
@@ -118,11 +117,10 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui) {
                         .map(|session| session.name.clone())
                         .unwrap_or_default();
                     let response = ui.label(RichText::new(name).color(theme::TEXT).size(14.0));
-                    if response.double_clicked() {
-                        if let Some(session) = app.session.as_ref() {
+                    if response.double_clicked()
+                        && let Some(session) = app.session.as_ref() {
                             app.renaming = Some((session.id.clone(), session.name.clone()));
                         }
-                    }
                 }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -203,14 +201,12 @@ fn canvas(app: &mut App, ui: &mut egui::Ui) {
                 .ctx()
                 .input(|input| input.pointer.interact_pos())
                 .map(|pos| to_norm(rect, pos));
-            if response.clicked_by(PointerButton::Secondary) {
-                if let (Some(session), Some(point)) = (app.session.as_ref(), point) {
-                    if let Some(index) = session.hit_test(point) {
+            if response.clicked_by(PointerButton::Secondary)
+                && let (Some(session), Some(point)) = (app.session.as_ref(), point)
+                    && let Some(index) = session.hit_test(point) {
                         let id = session.layers[index].id.clone();
                         app.select(&id);
                     }
-                }
-            }
             let _ = response.context_menu(|ui| context_menu(app, ui));
         });
 }
@@ -236,8 +232,8 @@ fn interact(
         let mut started = false;
         if let Some(layer) = app.selected_layer() {
             let box_px = layer.rect.to_px(canvas_size);
-            if !layer.locked {
-                if let Some(handle) = hit_handle(box_px, to_px_point(rect, pointer), 10.0) {
+            if !layer.locked
+                && let Some(handle) = hit_handle(box_px, to_px_point(rect, pointer), 10.0) {
                     app.canvas.drag = Some(DragState {
                         layer: layer.id.clone(),
                         handle: Some(handle),
@@ -247,10 +243,9 @@ fn interact(
                     });
                     started = true;
                 }
-            }
         }
-        if !started {
-            if let Some(session) = app.session.as_ref() {
+        if !started
+            && let Some(session) = app.session.as_ref() {
                 if let Some(index) = session.hit_test(local) {
                     let layer = &session.layers[index];
                     let id = layer.id.clone();
@@ -270,7 +265,6 @@ fn interact(
                     app.selection = None;
                 }
             }
-        }
     }
 
     if response.dragged_by(PointerButton::Primary) {
@@ -331,18 +325,17 @@ fn interact(
 
         app.canvas.guides_x = guides.0;
         app.canvas.guides_y = guides.1;
-        if let Some(session) = app.session.as_mut() {
-            if let Some(layer) = session.layer_mut(&layer_id) {
+        if let Some(session) = app.session.as_mut()
+            && let Some(layer) = session.layer_mut(&layer_id) {
                 layer.rect = new_rect;
             }
-        }
         if let Some(drag) = app.canvas.drag.as_mut() {
             drag.moved = true;
         }
     }
 
-    if response.drag_stopped() {
-        if app.canvas.drag.take().is_some() {
+    if response.drag_stopped()
+        && app.canvas.drag.take().is_some() {
             app.canvas.guides_x.clear();
             app.canvas.guides_y.clear();
             if let Some(session) = app.session.as_mut() {
@@ -350,29 +343,24 @@ fn interact(
             }
             app.save_current();
         }
-    }
 
     // Double click on a layer brings it forward one step.
-    if response.double_clicked_by(PointerButton::Primary) {
-        if let Some(session) = app.session.as_mut() {
-            if let Some(index) = session.hit_test(local) {
+    if response.double_clicked_by(PointerButton::Primary)
+        && let Some(session) = app.session.as_mut()
+            && let Some(index) = session.hit_test(local) {
                 let id = session.layers[index].id.clone();
                 session.bring_forward(&id);
                 session.touch();
                 app.selection = Some(id);
             }
-        }
-    }
 
     // A click without a drag selects.
-    if response.clicked_by(PointerButton::Primary) && app.canvas.drag.is_none() {
-        if let Some(session) = app.session.as_ref() {
-            if let Some(index) = session.hit_test(local) {
+    if response.clicked_by(PointerButton::Primary) && app.canvas.drag.is_none()
+        && let Some(session) = app.session.as_ref()
+            && let Some(index) = session.hit_test(local) {
                 let id = session.layers[index].id.clone();
                 app.select(&id);
             }
-        }
-    }
 }
 
 /// Build and submit the compositor callbacks for this frame.
@@ -606,18 +594,16 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui) {
     widgets::percent(ui, "Top", &mut crop.top);
     widgets::percent(ui, "Right", &mut crop.right);
     widgets::percent(ui, "Bottom", &mut crop.bottom);
-    if crop != before {
-        if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
+    if crop != before
+        && let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
             layer.crop = crop;
         }
-    }
     ui.separator();
 
-    if widgets::percent(ui, "Opacity", &mut opacity).changed() {
-        if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
+    if widgets::percent(ui, "Opacity", &mut opacity).changed()
+        && let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
             layer.opacity = opacity;
         }
-    }
 
     if ui.button(format!("Fit: {}", fit.label())).clicked() {
         fit = fit.toggled();
@@ -798,8 +784,8 @@ fn transport(app: &mut App, ui: &mut egui::Ui, theater: bool) {
                     {
                         app.theater = !app.theater;
                     }
-                    if !theater {
-                        if ui
+                    if !theater
+                        && ui
                             .add(
                                 egui::Button::new(
                                     RichText::new("Layers").color(if app.layers_panel {
@@ -827,7 +813,6 @@ fn transport(app: &mut App, ui: &mut egui::Ui, theater: bool) {
                         {
                             app.layers_panel = !app.layers_panel;
                         }
-                    }
                     // Link toggle.
                     let linked = app
                         .session
@@ -848,11 +833,9 @@ fn transport(app: &mut App, ui: &mut egui::Ui, theater: bool) {
                         )
                         .on_hover_text("Link the timelines (L)")
                         .clicked()
-                    {
-                        if let Some(session) = app.session.as_mut() {
+                        && let Some(session) = app.session.as_mut() {
                             session.is_linked = !session.is_linked;
                         }
-                    }
                     // Master volume.
                     let mut volume = app
                         .session
@@ -860,14 +843,13 @@ fn transport(app: &mut App, ui: &mut egui::Ui, theater: bool) {
                         .and_then(|session| session.master())
                         .map(|layer| layer.volume)
                         .unwrap_or(1.0);
-                    if widgets::slider(ui, "Vol", &mut volume, 0.0..=1.0, "").changed() {
-                        if let Some(session) = app.session.as_mut() {
+                    if widgets::slider(ui, "Vol", &mut volume, 0.0..=1.0, "").changed()
+                        && let Some(session) = app.session.as_mut() {
                             let id = session.master().map(|layer| layer.id.clone());
                             if let Some(layer) = id.and_then(|id| session.layer_mut(&id)) {
                                 layer.volume = volume;
                             }
                         }
-                    }
                     // Hardware badge for the selected layer.
                     if let Some(layer) = app.selected_layer() {
                         let backend = app
@@ -1039,28 +1021,24 @@ fn layers_panel(app: &mut App, ui: &mut egui::Ui) {
                                                     .small_button(if visible { "👁" } else { "—" })
                                                     .on_hover_text("Show or hide")
                                                     .clicked()
-                                                {
-                                                    if let Some(layer) = app
+                                                    && let Some(layer) = app
                                                         .session
                                                         .as_mut()
                                                         .and_then(|s| s.layer_mut(&id))
                                                     {
                                                         layer.visible = !layer.visible;
                                                     }
-                                                }
                                                 if ui
                                                     .small_button(if locked { "🔒" } else { "🔓" })
                                                     .on_hover_text("Lock this layer")
                                                     .clicked()
-                                                {
-                                                    if let Some(layer) = app
+                                                    && let Some(layer) = app
                                                         .session
                                                         .as_mut()
                                                         .and_then(|s| s.layer_mut(&id))
                                                     {
                                                         layer.locked = !layer.locked;
                                                     }
-                                                }
                                             },
                                         );
                                     });

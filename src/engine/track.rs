@@ -98,13 +98,12 @@ pub fn probe(source: &MediaSource) -> Result<MediaInfo, String> {
             info.fps_den = rate.denominator() as u32;
         }
         let params = stream.parameters();
-        if let Ok(context) = ffmpeg::codec::context::Context::from_parameters(params) {
-            if let Ok(video) = context.decoder().video() {
+        if let Ok(context) = ffmpeg::codec::context::Context::from_parameters(params)
+            && let Ok(video) = context.decoder().video() {
                 info.width = video.width();
                 info.height = video.height();
                 (info.source_format, info.converted) = classify_pixel_format(video.format());
             }
-        }
         if info.duration_us == 0 {
             let tb = stream.time_base();
             let stream_duration = stream.duration();
@@ -120,12 +119,11 @@ pub fn probe(source: &MediaSource) -> Result<MediaInfo, String> {
         info.has_audio = true;
         info.audio_stream = Some(stream.index());
         let params = stream.parameters();
-        if let Ok(context) = ffmpeg::codec::context::Context::from_parameters(params) {
-            if let Ok(audio) = context.decoder().audio() {
+        if let Ok(context) = ffmpeg::codec::context::Context::from_parameters(params)
+            && let Ok(audio) = context.decoder().audio() {
                 info.audio_channels = audio.channels();
                 info.audio_rate = audio.rate();
             }
-        }
     }
 
     if info.width == 0 || info.height == 0 {
@@ -511,13 +509,12 @@ impl VideoWorker {
         self.shared
             .converted
             .store(frame.converted, Ordering::Relaxed);
-        if !self.rotation_read {
-            if let Some(decoder) = self.decoder.as_ref() {
+        if !self.rotation_read
+            && let Some(decoder) = self.decoder.as_ref() {
                 let rotation = decoder.rotation;
                 self.shared.rotation.store(rotation, Ordering::Relaxed);
                 self.rotation_read = true;
             }
-        }
     }
 
     /// Handle one command; returns true when the worker should stop.

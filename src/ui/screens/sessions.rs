@@ -90,8 +90,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                     theme::hairline(theme::LINE),
                                     egui::StrokeKind::Inside,
                                 );
-                                if let Some(path) = summary.thumbnail.as_ref() {
-                                    if let Some(texture) = thumbnail_texture(&ctx, path) {
+                                if let Some(path) = summary.thumbnail.as_ref()
+                                    && let Some(texture) = thumbnail_texture(&ctx, path) {
                                         let uv = egui::Rect::from_min_max(
                                             egui::pos2(0.0, 0.0),
                                             egui::pos2(1.0, 1.0),
@@ -99,7 +99,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                         ui.painter()
                                             .image(texture.id(), rect, uv, egui::Color32::WHITE);
                                     }
-                                }
                                 ui.add_space(12.0);
 
                                 ui.vertical(|ui| {
@@ -201,11 +200,10 @@ fn rename(app: &mut App, id: &str, name: &str) {
                 app.toasts.error(message);
                 return;
             }
-            if app.session.as_ref().map(|open| open.id.as_str()) == Some(id) {
-                if let Some(open) = app.session.as_mut() {
+            if app.session.as_ref().map(|open| open.id.as_str()) == Some(id)
+                && let Some(open) = app.session.as_mut() {
                     open.name = trimmed.to_owned();
                 }
-            }
             app.refresh_sessions();
             app.toasts.info("Renamed.");
         }

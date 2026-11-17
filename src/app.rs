@@ -230,11 +230,10 @@ impl App {
         };
         app.reload_wallpaper(&cc.egui_ctx);
         // Continue where the last run left off, on the home screen.
-        if let Some(id) = app.settings.last_session.clone() {
-            if let Ok(session) = app.store.load_session(&id) {
+        if let Some(id) = app.settings.last_session.clone()
+            && let Ok(session) = app.store.load_session(&id) {
                 app.open_session(session, &cc.egui_ctx);
             }
-        }
         app
     }
 
@@ -243,11 +242,10 @@ impl App {
     pub fn go(&mut self, screen: Screen) {
         if screen != Screen::Player && self.screen == Screen::Player {
             self.save_current();
-            if let Some(runtime) = self.runtime.as_mut() {
-                if let Some(session) = self.session.as_ref() {
+            if let Some(runtime) = self.runtime.as_mut()
+                && let Some(session) = self.session.as_ref() {
                     runtime.stop(session);
                 }
-            }
         }
         self.screen = screen;
         if screen == Screen::Sessions {
@@ -309,11 +307,10 @@ impl App {
 
     /// Make `session` the open one and bring the engine up for it.
     pub fn open_session(&mut self, mut session: Session, _ctx: &egui::Context) {
-        if let Some(runtime) = self.runtime.as_mut() {
-            if let Some(previous) = self.session.as_ref() {
+        if let Some(runtime) = self.runtime.as_mut()
+            && let Some(previous) = self.session.as_ref() {
                 runtime.stop(previous);
             }
-        }
         session.normalize_z();
         if session.master_audio.is_none() {
             session.master_audio = session.default_master().map(|layer| layer.id.clone());
@@ -857,8 +854,8 @@ impl App {
                         .master()
                         .map(|layer| layer.id.clone())
                         .or_else(|| session.layers.first().map(|layer| layer.id.clone()));
-                    if let Some(id) = master {
-                        if let Some(layer) = session.layer_mut(&id) {
+                    if let Some(id) = master
+                        && let Some(layer) = session.layer_mut(&id) {
                             layer.muted = !layer.muted;
                             let muted = layer.muted;
                             self.toasts.info(if muted {
@@ -867,7 +864,6 @@ impl App {
                                 "Master audio on."
                             });
                         }
-                    }
                 }
             }
             Action::ToggleLayers => self.layers_panel = !self.layers_panel,
@@ -918,14 +914,13 @@ impl App {
                 }
                 session.touch();
                 self.probed.push(id.clone());
-                if let Some(layer) = session.layer(&id) {
-                    if layer.role == Role::Source {
+                if let Some(layer) = session.layer(&id)
+                    && layer.role == Role::Source {
                         let master = session.master_audio.clone();
                         if master.is_none() {
                             session.master_audio = Some(layer.id.clone());
                         }
                     }
-                }
             }
         }
         let _tick = runtime.tick(session, &settings);
@@ -1209,8 +1204,8 @@ impl App {
                 });
             });
         self.new_session.open = open && !cancel && !start;
-        if pick {
-            if let Some(files) = rfd::FileDialog::new()
+        if pick
+            && let Some(files) = rfd::FileDialog::new()
                 .add_filter(
                     "Video",
                     &["mp4", "mkv", "mov", "webm", "avi", "m4v", "ts", "m2ts"],
@@ -1220,7 +1215,6 @@ impl App {
                 self.new_session.files.extend(files);
                 self.new_session.error = None;
             }
-        }
         if start {
             self.start_session(ctx);
         }
@@ -1456,11 +1450,10 @@ pub fn slug(name: &str) -> String {
     for character in name.chars() {
         if character.is_ascii_alphanumeric() {
             out.push(character.to_ascii_lowercase());
-        } else if character.is_whitespace() || character == '-' || character == '_' {
-            if !out.ends_with('-') {
+        } else if (character.is_whitespace() || character == '-' || character == '_')
+            && !out.ends_with('-') {
                 out.push('-');
             }
-        }
     }
     let trimmed = out.trim_matches('-').to_owned();
     if trimmed.is_empty() {

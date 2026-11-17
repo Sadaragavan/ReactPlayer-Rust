@@ -138,11 +138,10 @@ impl Settings {
         if self.last_session.as_deref() == Some("") {
             self.last_session = None;
         }
-        if let Some(path) = &self.wallpaper {
-            if !path.exists() {
+        if let Some(path) = &self.wallpaper
+            && !path.exists() {
                 self.wallpaper = None;
             }
-        }
         self
     }
 

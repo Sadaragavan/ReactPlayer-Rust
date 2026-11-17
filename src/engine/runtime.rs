@@ -215,11 +215,10 @@ impl Runtime {
         let ids: Vec<String> = session.layers.iter().map(|layer| layer.id.clone()).collect();
         self.layers.retain(|id, _| {
             let keep = ids.iter().any(|kept| kept == id);
-            if !keep {
-                if let Some(slot) = self.slots.remove(id) {
+            if !keep
+                && let Some(slot) = self.slots.remove(id) {
                     self.used_slots[slot] = false;
                 }
-            }
             keep
         });
 
@@ -340,11 +339,10 @@ impl Runtime {
         self.playing = false;
         self.clock.set_playing(false);
         for layer in &session.layers {
-            if let Some(state) = self.layers.get(&layer.id) {
-                if let Some(track) = &state.track {
+            if let Some(state) = self.layers.get(&layer.id)
+                && let Some(track) = &state.track {
                     track.try_send(Command::Pause);
                 }
-            }
         }
         self.audio.silence_all();
     }
@@ -437,16 +435,14 @@ impl Runtime {
             let Some(state) = self.layers.get_mut(&layer.id) else {
                 continue;
             };
-            if steps < 0 {
-                if let Some(shared) = &state.shared {
-                    if let Some(frame) = shared.frame_before(state.presented_us, frame_us) {
+            if steps < 0
+                && let Some(shared) = &state.shared
+                    && let Some(frame) = shared.frame_before(state.presented_us, frame_us) {
                         state.presented_us = frame.pts_us;
                         state.presented = Some(frame);
                         state.pending = None;
                         continue;
                     }
-                }
-            }
             if let Some(track) = &state.track {
                 track.try_send(Command::Step { delta: steps });
             }
@@ -499,12 +495,11 @@ impl Runtime {
                 return;
             };
             let now = Instant::now();
-            if state.unlinked_playing {
-                if let Some(last) = state.unlinked_last_tick {
+            if state.unlinked_playing
+                && let Some(last) = state.unlinked_last_tick {
                     let elapsed = now.saturating_duration_since(last).as_micros() as i64;
                     state.unlinked_us = (state.unlinked_us + elapsed).min(duration - 1);
                 }
-            }
             state.unlinked_last_tick = Some(now);
             state.unlinked_us + layer.offset_us
         };
@@ -557,13 +552,12 @@ impl Runtime {
         let half_frame = layer.frame_us() / 2;
 
         // A frame that was already too new for the previous tick.
-        if let Some(frame) = pending.as_ref() {
-            if frame.pts_us <= target + half_frame {
+        if let Some(frame) = pending.as_ref()
+            && frame.pts_us <= target + half_frame {
                 *presented = Some(frame.clone());
                 *presented_us = frame.pts_us;
                 *pending = None;
             }
-        }
 
         let mut accept_epoch = *epoch;
         let mut awaiting = *awaiting_epoch;

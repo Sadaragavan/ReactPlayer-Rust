@@ -126,7 +126,7 @@ impl Store {
             Ok(file) if file.version <= PRESET_VERSION => {
                 let mut presets: Vec<Preset> =
                     file.presets.into_iter().filter(|p| !p.built_in).collect();
-                presets.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                presets.sort_by_key(|a| a.name.to_lowercase());
                 presets
             }
             _ => Vec::new(),
