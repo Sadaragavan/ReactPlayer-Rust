@@ -938,7 +938,7 @@ impl App {
                 .raw
                 .dropped_files
                 .iter()
-                .filter_map(|file| Some(file.path().to_path_buf()))
+                .map(|file| file.path().to_path_buf())
                 .collect();
             (dropped, !input.raw.hovered_files.is_empty())
         });
