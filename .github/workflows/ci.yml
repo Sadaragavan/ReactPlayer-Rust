@@ -9,6 +9,9 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-24.04
+    outputs:
+      report: ${{ steps.pack.outputs.report }}
+      pushlog: ${{ steps.pack.outputs.pushlog }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,33 +28,36 @@ jobs:
             . /etc/os-release; echo "$PRETTY_NAME"
             echo "rustc: $(rustc --version)"
             echo "cargo: $(cargo --version)"
-            echo "clang: $(clang --version | head -1)"
             echo "--- pkg-config ffmpeg ---"
             for l in libavcodec libavformat libavutil libswscale libswresample libavfilter libavdevice; do printf '%s %s\n' "$l" "$(pkg-config --modversion $l)"; done
             echo "--- crates.io latest ---"
             for c in eframe egui egui-wgpu wgpu wgpu-hal bytemuck ffmpeg-next ffmpeg-sys-next cpal ringbuf arboard rfd directories serde serde_json image pollster; do
               printf '%s %s\n' "$c" "$(curl -s -H 'User-Agent: probe' https://crates.io/api/v1/crates/$c | jq -r .crate.max_stable_version)"
             done
-          } > ci-report.txt 2>&1
-          cat ci-report.txt
-      - name: probe arch
-        run: |
-          set +e
-          {
             echo "=== archlinux container ==="
             docker run --rm archlinux:latest bash -c 'pacman -Sy --noconfirm --quiet >/dev/null 2>&1; pacman -Si ffmpeg | grep -E "^(Name|Version|Depends On)"'
-            echo "--- arch rust ---"
             docker run --rm archlinux:latest bash -c 'pacman -Sy --noconfirm --quiet >/dev/null 2>&1; pacman -Si rust clang | grep -E "^(Name|Version)"'
-          } >> ci-report.txt 2>&1
-          tail -30 ci-report.txt
-      - name: publish report
-        if: always()
+          } > ci-report.txt 2>&1
+          head -40 ci-report.txt
+      - name: try push
         run: |
+          set +e
           git config user.name ci
           git config user.email ci@localhost
           git add -f ci-report.txt
-          git commit -q -m "ci: probe report [skip ci]" || exit 0
-          for i in 1 2 3 4 5; do
-            if git pull --rebase -q && git push -q; then break; fi
-            sleep 5
-          done
+          git commit -q -m "ci: probe report [skip ci]"
+          git push origin HEAD:refs/heads/arena/cb84f04b-reactplayer-rust > pushlog.txt 2>&1
+          echo "push exit: $?" >> pushlog.txt
+          cat pushlog.txt
+      - name: pack
+        if: always()
+        id: pack
+        run: |
+          {
+            echo 'report<<__END__'
+            cat ci-report.txt 2>/dev/null | head -120
+            echo '__END__'
+            echo 'pushlog<<__END__'
+            cat pushlog.txt 2>/dev/null | head -40
+            echo '__END__'
+          } >> "$GITHUB_OUTPUT"
