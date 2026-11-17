@@ -207,7 +207,7 @@ fn row(app: &mut App, ui: &mut Ui, id: u64) {
         ("⊘", layer.locked, "Locked"),
     ] {
         let r = egui::Rect::from_min_size(egui::pos2(x, top), Vec2::splat(20.0));
-        let resp = ui.interact(r, ui.id().with((id, glyph)), Sense::click());
+        let resp = ui.interact(r, ui.scope_id().with((id, glyph)), Sense::click());
         ui.painter().text(
             r.center(),
             egui::Align2::CENTER_CENTER,
@@ -259,7 +259,7 @@ fn row(app: &mut App, ui: &mut Ui, id: u64) {
         egui::pos2(rect.right() - pad - 24.0, top),
         Vec2::new(24.0, 22.0),
     );
-    let z_resp = ui.interact(z_rect, ui.id().with((id, "z")), Sense::click());
+    let z_resp = ui.interact(z_rect, ui.scope_id().with((id, "z")), Sense::click());
     ui.painter().text(
         z_rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -347,7 +347,7 @@ fn row(app: &mut App, ui: &mut Ui, id: u64) {
     let mut bx = rect.right() - pad - 20.0;
     for (glyph, forward) in [("↓", false), ("↑", true)] {
         let r = egui::Rect::from_min_size(egui::pos2(bx, rect.top() + 56.0), Vec2::splat(18.0));
-        let resp = ui.interact(r, ui.id().with((id, glyph)), Sense::click());
+        let resp = ui.interact(r, ui.scope_id().with((id, glyph)), Sense::click());
         ui.painter().text(
             r.center(),
             egui::Align2::CENTER_CENTER,

@@ -158,14 +158,17 @@ impl StudioState {
     }
 }
 
-/// Draw the studio as a floating panel over the canvas.
-pub fn show(app: &mut App, ui: &mut Ui) {
+/// Draw the studio as a floating window over the canvas.
+///
+/// Takes the context rather than a `Ui`: an egui `Window` is a free-floating
+/// area, so it must not be nested inside the canvas layout.
+pub fn show(app: &mut App, ctx: &egui::Context) {
     if !app.studio.open {
         return;
     }
     let mut open = true;
     egui::Window::new("Alignment Studio")
-        .id(egui::Id::new("alignment-studio"))
+        .id(egui::Id::unique("alignment-studio"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -177,7 +180,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 .stroke(egui::Stroke::new(1.0, theme::BORDER))
                 .inner_margin(egui::Margin::same(12)),
         )
-        .show(ui.ctx(), |ui| body(app, ui));
+        .show(ctx, |ui| body(app, ui));
     app.studio.open = open && app.studio.open;
 }
 

@@ -22,7 +22,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     // dialog never opens on top of a window that is about to be torn down.
     let mut pending_media: Option<String> = None;
     egui::Window::new(format!("layer-menu-{id}"))
-        .id(egui::Id::new(("layer-menu", id)))
+        .id(egui::Id::unique(("layer-menu", id)))
         .title_bar(false)
         .resizable(false)
         .collapsible(false)

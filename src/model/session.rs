@@ -262,8 +262,20 @@ impl Session {
     }
 
     /// Bring `id` to the front (topmost).
-    pub fn bring_to_front(&mut self, id: u64) {
-        let Some(idx) = self.layer_index(id) else { return };
+    ///
+    /// Returns true when the layer actually moved, so callers can skip a
+    /// pointless save.
+    pub fn bring_to_front(&mut self, id: u64) -> bool {
+        let Some(idx) = self.layer_index(id) else {
+            return false;
+        };
+        self.normalize_z();
+        // Already the topmost? Then there is nothing to save.
+        if let Some(&top_i) = self.paint_order().last()
+            && top_i == idx
+        {
+            return false;
+        }
         let top = self
             .layers
             .iter()
@@ -273,11 +285,20 @@ impl Session {
             .saturating_add(1);
         self.layers[idx].z_index = top;
         self.normalize_z();
+        true
     }
 
-    /// Send `id` to the back (bottom-most).
-    pub fn send_to_back(&mut self, id: u64) {
-        let Some(idx) = self.layer_index(id) else { return };
+    /// Send `id` to the back (bottom-most). Returns true if moved.
+    pub fn send_to_back(&mut self, id: u64) -> bool {
+        let Some(idx) = self.layer_index(id) else {
+            return false;
+        };
+        self.normalize_z();
+        if let Some(&bottom_i) = self.paint_order().first()
+            && bottom_i == idx
+        {
+            return false;
+        }
         let bottom = self
             .layers
             .iter()
@@ -287,29 +308,33 @@ impl Session {
             .saturating_sub(1);
         self.layers[idx].z_index = bottom;
         self.normalize_z();
+        true
     }
 
-    /// Move `id` one step forward (towards the front).
-    pub fn bring_forward(&mut self, id: u64) {
-        self.swap_with_neighbour(id, true);
+    /// Move `id` one step forward (towards the front). Returns true if moved.
+    pub fn bring_forward(&mut self, id: u64) -> bool {
+        self.swap_with_neighbour(id, true)
     }
 
-    /// Move `id` one step backward (towards the back).
-    pub fn send_backward(&mut self, id: u64) {
-        self.swap_with_neighbour(id, false);
+    /// Move `id` one step backward (towards the back). Returns true if moved.
+    pub fn send_backward(&mut self, id: u64) -> bool {
+        self.swap_with_neighbour(id, false)
     }
 
-    fn swap_with_neighbour(&mut self, id: u64, forward: bool) {
-        let Some(idx) = self.layer_index(id) else { return };
+    fn swap_with_neighbour(&mut self, id: u64, forward: bool) -> bool {
+        let Some(idx) = self.layer_index(id) else {
+            return false;
+        };
         self.normalize_z();
         let z = self.layers[idx].z_index;
         let target_z = if forward { z + 1 } else { z - 1 };
         let Some(other) = self.layers.iter().position(|l| l.z_index == target_z) else {
-            return;
+            return false;
         };
         self.layers[idx].z_index = target_z;
         self.layers[other].z_index = z;
         self.normalize_z();
+        true
     }
 
     /// Top-most visible, unlocked layer at normalized canvas point `(x, y)`.
@@ -354,7 +379,7 @@ impl Session {
 
     /// Fix up invariants after loading: dense z-indices, sanitized geometry,
     /// a valid master audio layer.
-    pub fn sanitize(mut self) -> Self {
+    pub fn sanitize(&mut self) {
         self.layers = std::mem::take(&mut self.layers)
             .into_iter()
             .map(LayerConfig::sanitized)
@@ -372,7 +397,6 @@ impl Session {
                 .min_by_key(|l| l.z_index)
                 .map(|l| l.id);
         }
-        self
     }
 
     /// Thumbnail path relative to the session's data directory.
@@ -527,7 +551,7 @@ mod tests {
         s.master_audio_layer = Some(99);
         s.layers[0].opacity = 5.0;
         s.layers[0].rect = NormalizedRect::new(f32::NAN, 0.0, 1.0, 1.0);
-        let s = s.sanitize();
+        s.sanitize();
         assert_eq!(s.master_audio_layer, Some(1));
         assert_eq!(s.layers[0].opacity, 1.0);
         assert_eq!(s.layers[0].rect, NormalizedRect::full());
@@ -574,7 +598,8 @@ mod tests {
 
     #[test]
     fn summary_counts_layers() {
-        let s = sample_session().sanitize();
+        let mut s = sample_session();
+        s.sanitize();
         let sum = s.summary();
         assert_eq!(sum.layer_count, 3);
         assert_eq!(sum.id, "s1");

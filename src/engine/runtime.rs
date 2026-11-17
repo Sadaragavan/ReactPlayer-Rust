@@ -260,7 +260,7 @@ impl Runtime {
 
     /// True when the layer has its own footage at `t_us`.
     pub fn is_active(&self, layer_id: u64, t_us: i64) -> bool {
-        let Some(state) = self.layers.get(layer_id) else {
+        let Some(state) = self.layers.get(&layer_id) else {
             return false;
         };
         if state.info.is_none() {
@@ -401,13 +401,11 @@ impl Runtime {
             };
             self.request_seek(*id, target);
         }
-        let offset = self.offset(primary);
         let new_t = if forward {
             (t + step).max(0)
         } else {
             (t - step).max(0)
         };
-        let _ = offset;
         self.clock.set_position_us(new_t);
     }
 
@@ -656,7 +654,8 @@ mod tests {
     fn sample_session_with_layers(layers: Vec<LayerConfig>) -> Session {
         let mut s = Session::new("t", "T", crate::model::CanvasAspect::Widescreen);
         s.layers = layers;
-        s.sanitize()
+        s.sanitize();
+        s
     }
 
     fn layer(id: u64, z: i32) -> LayerConfig {

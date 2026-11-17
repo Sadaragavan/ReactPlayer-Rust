@@ -367,7 +367,8 @@ mod tests {
                 i as i32,
             ));
         }
-        s.sanitize()
+        s.sanitize();
+        s
     }
 
     #[test]

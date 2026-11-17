@@ -25,7 +25,7 @@ fn cheat_sheet(app: &mut App, ctx: &egui::Context) {
     }
     let mut open = true;
     egui::Window::new("Keyboard shortcuts")
-        .id(egui::Id::new("cheat-sheet"))
+        .id(egui::Id::unique("cheat-sheet"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)

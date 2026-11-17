@@ -37,9 +37,12 @@ impl PaintList {
     where
         F: FnMut(u64) -> Option<Rect>,
     {
+        // `paint_order` yields indices into `session.layers`, already sorted
+        // back-to-front.
         let mut layers: Vec<LayerPaint> = session
             .paint_order()
             .into_iter()
+            .map(|i| &session.layers[i])
             .filter(|l| l.visible)
             .filter_map(|l| {
                 let rect = rect_for(l.id)?;

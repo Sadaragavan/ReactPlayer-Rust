@@ -27,7 +27,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let mut reset_requested = false;
 
     egui::Window::new("Settings")
-        .id(egui::Id::new("settings-window"))
+        .id(egui::Id::unique("settings-window"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -172,7 +172,7 @@ fn confirm_clear(app: &mut App, ctx: &egui::Context) {
     let mut open = true;
     let mut confirmed = false;
     egui::Window::new("Clear local app data?")
-        .id(egui::Id::new("clear-data-confirm"))
+        .id(egui::Id::unique("clear-data-confirm"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)

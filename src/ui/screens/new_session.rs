@@ -140,7 +140,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let mut created = false;
     let mut cancelled = false;
 
-    egui::Modal::new(egui::Id::new("new-session-modal"))
+    egui::Modal::new(egui::Id::unique("new-session-modal"))
         .frame(
             egui::Frame::NONE
                 .fill(theme::BG)
@@ -159,7 +159,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 
             widgets::labelled_text(
                 ui,
-                egui::Id::new("ns-name"),
+                egui::Id::unique("ns-name"),
                 "Name",
                 &mut form.name,
                 "Session name",
@@ -215,7 +215,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         widgets::dim(ui, role.default_label());
                         let resp = ui.add(
                             egui::TextEdit::singleline(&mut form.labels[i])
-                                .id(egui::Id::new(("ns-label", i)))
+                                .id(egui::Id::unique(("ns-label", i)))
                                 .desired_width(110.0)
                                 .margin(egui::Margin::symmetric(4, 3)),
                         );

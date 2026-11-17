@@ -2,7 +2,7 @@
 //! link, master volume, offset steppers (showing milliseconds), the hardware
 //! badge, and the theater / fullscreen / layers toggles.
 
-use eframe::egui::{self, Align, Layout, Pos2, Rect, Sense, Vec2};
+use eframe::egui::{self, Align, Layout, Pos2, Rect, Sense, Ui, Vec2};
 
 use crate::app::{App, OffsetTarget};
 use crate::ui::screens::canvas::format_duration;
@@ -132,7 +132,7 @@ fn controls(app: &mut App, ui: &mut Ui) {
                     Pos2::new(c.x - 4.0, c.y + 7.0),
                 ],
                 theme::BG,
-                egui::PathStroke::NONE,
+                egui::Stroke::NONE.into(),
             ));
         }
         if resp.clicked() {

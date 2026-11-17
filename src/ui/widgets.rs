@@ -39,8 +39,10 @@ pub fn button(u: &mut Ui, text: impl Into<String>) -> Response {
         Stroke::new(1.0, if hovered { theme::TEXT_DIM } else { theme::BORDER }),
         StrokeKind::Inside,
     );
+    // Third argument is the fallback color used when the galley carries no
+    // per-section colors; ours always does, so the value is inert.
     u.painter()
-        .galley(rect.center() - galley.size() * 0.5, galley);
+        .galley(rect.center() - galley.size() * 0.5, galley, theme::TEXT);
     response
 }
 
@@ -244,7 +246,9 @@ pub fn value_slot(u: &mut Ui, text: &str, width: f32) {
 
 /// A horizontal row of equal-width items.
 pub fn row<R>(u: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    // `with_layout` wraps the closure's value in an `InnerResponse`.
     u.with_layout(Layout::left_to_right(Align::Center), add)
+        .inner
 }
 
 /// A spinner-free "working" indicator: three dim dots.
@@ -252,7 +256,9 @@ pub fn working(u: &mut Ui, what: &str) {
     u.horizontal(|ui| {
         let color = theme::ACCENT;
         for i in 0..3 {
-            let t = u.input(|i| i.time) as f32;
+            // `u` is already mutably borrowed by `ui.horizontal`, so read
+            // frame time from `ui` here.
+            let t = ui.input(|i| i.time) as f32;
             let phase = ((t * 2.0 + i as f32 * 0.3).sin() * 0.5 + 0.5) * 0.8 + 0.2;
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(4.0), Sense::hover());
             ui.painter()

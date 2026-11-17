@@ -23,7 +23,7 @@
 use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -44,6 +44,18 @@ use super::hwaccel::{
     self, ColorRange, DecodeBackend, HwCandidate, HwDevice, HwError,
 };
 use super::video_frame::{PixelFormat, PlaneBuf, PlanePool, VideoFrame};
+
+/// Look up a stream by its stream index.
+///
+/// `StreamIter` is a plain `Iterator`, not an indexed collection, so it has no
+/// `get`. `find` walks the streams once and matches on the `AVStream` index,
+/// which is the number FFmpeg puts on packets and in `best()`.
+fn stream_at(
+    input: &ffmpeg::format::context::Input,
+    index: usize,
+) -> Option<ffmpeg_next::Stream<'_>> {
+    input.streams().find(|s| s.index() == index)
+}
 
 /// How many decoded frames are kept for the renderer.
 pub const QUEUE_CAPACITY: usize = 6;
@@ -106,6 +118,19 @@ pub enum TrackError {
     /// A requested seek failed but the track can continue.
     Seek(String),
 }
+
+impl std::fmt::Display for TrackError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TrackError::Open(msg) => write!(f, "could not open the media: {msg}"),
+            TrackError::NoVideo => write!(f, "the file has no decodable video stream"),
+            TrackError::Decode(msg) => write!(f, "decoding failed: {msg}"),
+            TrackError::Seek(msg) => write!(f, "seek failed: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for TrackError {}
 
 /// Commands sent from the UI thread to the worker.
 #[derive(Debug, Clone, PartialEq)]
@@ -623,7 +648,9 @@ impl Worker {
 
         // ---- video decoder (software first to learn the real pixel format)
         let vctx = ffmpeg::codec::context::Context::from_parameters(
-            input.streams().get(video_index).unwrap().parameters(),
+            stream_at(&input, video_index)
+                .unwrap()
+                .parameters(),
         )
         .map_err(|e| TrackError::Open(e.to_string()))?;
         let mut decoder = vctx.decoder().video().map_err(|e| TrackError::Open(e.to_string()))?;
@@ -712,11 +739,7 @@ impl Worker {
         // ---- audio decoder
         if let Some(ai) = self.audio_index {
             let actx = ffmpeg::codec::context::Context::from_parameters(
-                self.input
-                    .as_ref()
-                    .unwrap()
-                    .streams()
-                    .get(ai)
+                stream_at(self.input.as_ref().unwrap(), ai)
                     .ok_or_else(|| TrackError::Open("audio stream vanished".into()))?
                     .parameters(),
             )
@@ -750,13 +773,7 @@ impl Worker {
             return Err(HwError::NoCandidates);
         }
         let input = self.input.as_ref().ok_or(HwError::NoCandidates)?;
-        let params = input
-            .streams()
-            .get(self.video_index)
-            .ok_or(HwError::NoCandidates)?
-            .parameters();
-        let vctx = ffmpeg::codec::context::Context::from_parameters(params)
-            .map_err(|e| HwError::Setup(e.to_string()))?;
+        // Each candidate builds its own context below; nothing here needs one.
 
         for cand in candidates {
             // Ask the decoder's own `AVCodec` whether it can do this. The
@@ -764,7 +781,9 @@ impl Worker {
             // FFmpeg and stays valid, but we only use it inside this block.
             let supported = {
                 let mut probe_ctx = ffmpeg::codec::context::Context::from_parameters(
-                    input.streams().get(self.video_index).unwrap().parameters(),
+                    stream_at(input, self.video_index)
+                    .unwrap()
+                    .parameters(),
                 )
                 .map_err(|e| HwError::Setup(e.to_string()))?;
                 // SAFETY: `probe_ctx` is a live codec context whose `codec`
@@ -884,9 +903,8 @@ impl Worker {
         if let Ok(mut hist) = self.shared.history.lock() {
             hist.clear();
         }
-        if let Some(ares) = self.audio.as_ref() {
-            ares.mark_seek(self.shared.seek_epoch.load(Ordering::Acquire));
-        }
+        self.audio
+            .mark_seek(self.shared.seek_epoch.load(Ordering::Acquire));
         self.decode_until_target()?;
         self.shared.position_us.store(target_us, Ordering::Relaxed);
         Ok(())
@@ -1128,9 +1146,7 @@ impl Worker {
             return Ok(false);
         };
         let ctx = ffmpeg::codec::context::Context::from_parameters(
-            input
-                .streams()
-                .get(self.video_index)
+            stream_at(input, self.video_index)
                 .ok_or_else(|| TrackError::Decode("video stream vanished".into()))?
                 .parameters(),
         )

@@ -123,7 +123,6 @@ pub fn fit_rect(dst: PixelRect, src_w: f32, src_h: f32, mode: FitMode) -> PixelR
         return dst;
     }
     let src_ratio = src_w / src_h;
-    let dst_ratio = dst.w / dst.h;
     let scale = match mode {
         FitMode::Fit => {
             let w = dst.w;

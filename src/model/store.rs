@@ -276,8 +276,9 @@ impl Store {
 
     /// Load a session by id.
     pub fn load_session(&self, id: &str) -> AppResult<Session> {
-        let s = self.read_json::<Session>(&self.paths.session_file(id))?;
-        Ok(s.sanitize())
+        let mut s = self.read_json::<Session>(&self.paths.session_file(id))?;
+        s.sanitize();
+        Ok(s)
     }
 
     /// Delete a session and its thumbnail.
@@ -341,7 +342,7 @@ impl Store {
         s.id = generate_id();
         s.thumbnail = None;
         s.modified_unix = super::session::now_unix();
-        let s = s.sanitize();
+        s.sanitize();
         self.save_session(&s)?;
         Ok(s)
     }
@@ -384,7 +385,8 @@ mod tests {
             NormalizedRect::full(),
             0,
         ));
-        s.sanitize()
+        s.sanitize();
+        s
     }
 
     #[test]

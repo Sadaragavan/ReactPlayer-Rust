@@ -8,7 +8,7 @@ use crate::app::App;
 use crate::engine::hwaccel::DecodeBackend;
 use crate::gpu::compositor::{self, LayerPaint, PaintList};
 use crate::gpu::renderer::FrameUpload;
-use crate::model::layout::{canvas_rect as aspect_canvas_rect, fit_rect, layer_pixel_rect, FitMode};
+use crate::model::layout::{fit_rect, layer_pixel_rect, FitMode};
 use crate::model::{Handle, NormalizedRect, PixelRect, Size};
 use crate::ui::screens::canvas_tools;
 use crate::ui::theme;
@@ -37,7 +37,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 w: avail.width(),
                 h: avail.height(),
             };
-            let canvas = aspect_canvas_rect(app.session.aspect, pixel);
+            let canvas = app.session.aspect.canvas_rect(pixel);
             let canvas_rect = Rect::from_min_size(
                 Pos2::new(avail.left() + canvas.x, avail.top() + canvas.y),
                 Vec2::new(canvas.w, canvas.h),
@@ -108,7 +108,7 @@ fn draw_wallpaper(app: &mut App, ui: &mut Ui, canvas_rect: Rect) {
     };
     let key = format!("wallpaper-{}", path);
     let texture = ui.ctx().data_mut(|d| {
-        d.get_temp::<egui::TextureHandle>(egui::Id::new(&key))
+        d.get_temp::<egui::TextureHandle>(egui::Id::unique(&key))
     });
     let texture = match texture {
         Some(t) => t,
@@ -123,7 +123,7 @@ fn draw_wallpaper(app: &mut App, ui: &mut Ui, canvas_rect: Rect) {
                 .ctx()
                 .load_texture(&key, color, egui::TextureOptions::LINEAR);
             ui.ctx()
-                .data_mut(|d| d.insert_temp(egui::Id::new(&key), handle.clone()));
+                .data_mut(|d| d.insert_temp(egui::Id::unique(&key), handle.clone()));
             handle
         }
     };

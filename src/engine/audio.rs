@@ -284,25 +284,26 @@ pub struct AudioEngine {
 impl AudioEngine {
     /// An engine with no device at all. The clock then runs on `Instant`.
     pub fn silent() -> Self {
-        Self::try_build(false)
+        Self::try_build(Arc::new(MasterClock::new()), false)
     }
 
     /// An engine that opens the default output device (falling back to a
     /// silent engine when no device exists).
+    ///
+    /// `clock` is the engine's master clock: the output callback is what
+    /// advances it, so the caller and the callback must share one instance.
     pub fn with_device(clock: Arc<MasterClock>) -> Self {
-        Self::try_build(true)
+        Self::try_build(clock, true)
     }
 
     /// Try to open the default output device. Always succeeds: when no device
     /// exists the engine runs without a stream and the clock falls back to
     /// `Instant`.
     pub fn new(clock: Arc<MasterClock>) -> Self {
-        let _ = clock;
-        Self::try_build(true)
+        Self::try_build(clock, true)
     }
 
-    fn try_build(use_device: bool) -> Self {
-        let clock = Arc::new(MasterClock::new());
+    fn try_build(clock: Arc<MasterClock>, use_device: bool) -> Self {
         if !use_device {
             clock.set_audio_driven(false);
             return Self {
@@ -382,7 +383,8 @@ impl AudioEngine {
                 "default output device uses {sample_format:?} samples; reaction-player mixes in f32"
             ));
         }
-        let sample_rate = config.sample_rate().0;
+        // cpal 0.19 made `SampleRate` a plain `u32` alias.
+        let sample_rate = config.sample_rate();
         let channels = config.channels() as usize;
         let stream_config = config.config();
         let err_flag = Arc::clone(&last_error);
@@ -395,7 +397,9 @@ impl AudioEngine {
         let stream = device
             .build_output_stream(
                 stream_config,
-                move |data: &mut [f32], info: &cpal::CallbackInfo| {
+                // The info type is inferred: naming it would pin us to a path that
+                // has moved between cpal releases.
+                move |data: &mut [f32], info: &_| {
                     let frames = data.len() / channels;
                     // Output latency: device timestamp (predicted DAC time)
                     let ts = info.timestamp();

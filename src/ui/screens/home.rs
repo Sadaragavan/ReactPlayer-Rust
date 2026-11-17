@@ -351,7 +351,7 @@ fn card(
         );
         let resp = ui.interact(
             button_rect,
-            ui.id().with((id, act)),
+            ui.scope_id().with((id, act)),
             Sense::click(),
         );
         ui.painter().rect_stroke(

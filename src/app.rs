@@ -23,10 +23,10 @@ use crate::model::presets::PresetLibrary;
 use crate::model::session::{LayerConfig, Session};
 use crate::model::settings::{Preferences, Settings};
 use crate::model::store::{generate_id, AppPaths, Store};
-use crate::model::timeline::union_bounds;
 use crate::model::UnionBounds;
 use crate::ui::screens;
 use crate::ui::shortcuts::{self, Action, KeyPress, Mods, TransportState};
+use crate::ui::theme;
 use crate::ui::toast::{Toast, Toasts};
 
 /// Everything remembered between runs.
@@ -208,7 +208,9 @@ impl App {
         let mut runtime = Runtime::with_audio();
         runtime.apply_preferences(&persisted.preferences);
 
-        let union = union_bounds(&session);
+        // A fresh runtime has not probed anything yet; `bind_runtime` and
+        // `poll_probes` fill the real union in once the workers report.
+        let union = UnionBounds::EMPTY;
         Self {
             store,
             persisted,
@@ -246,8 +248,11 @@ impl App {
 
     // ------------------------------------------------------------- session
     /// Recompute the union timeline.
+    ///
+    /// Durations come from the decode workers, not from the session file, so a
+    /// layer that has not been probed yet contributes nothing.
     pub fn rebuild_union(&mut self) {
-        self.union = union_bounds(&self.session);
+        self.union = self.runtime.union();
     }
 
     /// Load a session, replacing the current one and re-binding the engine.
@@ -300,6 +305,9 @@ impl App {
         self.runtime.master_audio = self.session.master_audio_layer;
         self.runtime.master_muted = false;
         self.runtime.master_volume = 1.0;
+        // The new runtime has not probed anything yet, so the union collapses
+        // to empty here and grows as probe results arrive.
+        self.rebuild_union();
         // A fresh session starts at the union start so a short offset layer
         // does not begin mid-sentence.
         self.runtime.seek_timeline(self.union.start_us);
@@ -535,6 +543,13 @@ impl App {
                     if let Some(state) = self.runtime.layers.get_mut(&id) {
                         state.info = Some(info);
                     }
+                    // The union only knows about probed layers, so it grows
+                    // here rather than at session load.
+                    self.rebuild_union();
+                    if !self.runtime.is_playing() {
+                        let start = self.union.start_us;
+                        self.runtime.seek_timeline(start);
+                    }
                 }
                 Err(e) => {
                     self.error(format!("Layer {id} failed to open: {e}"));
@@ -609,6 +624,35 @@ pub fn is_url(source: &str) -> bool {
     SCHEMES.iter().any(|s| lower.starts_with(s))
 }
 
+impl App {
+    /// Drop GPU texture sets for layers that no longer exist.
+    ///
+    /// The compositor caches up to three plane textures per layer, so deleting
+    /// a clip would otherwise leak its set until the app exits. Runs every
+    /// frame and costs one `retain` over a handful of entries. The render
+    /// state is absent under a non-wgpu backend, in which case there is no
+    /// cache to trim.
+    fn retire_gpu_caches(&self) {
+        let Some(render_state) = self.render_state.as_ref() else {
+            return;
+        };
+        let live: Vec<u64> = self.session.layers.iter().map(|l| l.id).collect();
+        // Only take the renderer lock when the layer set actually changed:
+        // writing to it every frame would contend with the paint thread for
+        // nothing.
+        if *self.gpu_cache_keys.borrow() == live {
+            return;
+        }
+        {
+            // `Renderer::write` hands back the guard itself (parking_lot
+            // semantics), so there is no `Result` to unwrap.
+            let mut renderer = render_state.renderer.write();
+            crate::gpu::compositor::retire_layers(&mut renderer.callback_resources, &live);
+        }
+        *self.gpu_cache_keys.borrow_mut() = live;
+    }
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut Frame) {
         let ctx = ui.ctx().clone();
@@ -637,29 +681,5 @@ impl eframe::App for App {
         screens::toasts::show(self, ui);
 
         self.retire_gpu_caches();
-    }
-
-    /// Drop GPU texture sets for layers that no longer exist.
-    ///
-    /// The compositor caches up to three plane textures per layer, so deleting
-    /// a clip would otherwise leak its set until the app exits. Runs every
-    /// frame and costs one `retain` over a handful of entries. The render
-    /// state is absent under a non-wgpu backend, in which case there is no
-    /// cache to trim.
-    fn retire_gpu_caches(&self) {
-        let Some(render_state) = self.render_state.as_ref() else {
-            return;
-        };
-        let live: Vec<u64> = self.session.layers.iter().map(|l| l.id).collect();
-        // Only take the renderer lock when the layer set actually changed:
-        // writing to it every frame would contend with the paint thread for
-        // nothing.
-        if *self.gpu_cache_keys.borrow() == live {
-            return;
-        }
-        if let Ok(mut renderer) = render_state.renderer.write() {
-            crate::gpu::compositor::retire_layers(&mut renderer.callback_resources, &live);
-        }
-        *self.gpu_cache_keys.borrow_mut() = live;
     }
 }

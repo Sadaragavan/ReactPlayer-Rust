@@ -34,7 +34,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         );
         let painter = ui
             .ctx()
-            .layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new(("toast", i))));
+            .layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique(("toast", i))));
         painter.rect_filled(rect, 0.0, theme::SURFACE);
         let border = if kind == ToastKind::Error {
             theme::ERROR
@@ -68,7 +68,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         );
 
         // A click anywhere on the toast dismisses it.
-        let resp = ui.interact(rect, egui::Id::new(("toast-hit", i)), egui::Sense::click());
+        let resp = ui.interact(rect, egui::Id::unique(("toast-hit", i)), egui::Sense::click());
         if resp.clicked() {
             dismiss = Some(i);
         }
