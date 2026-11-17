@@ -15,7 +15,7 @@
 //! Nothing here needs network access: ffmpeg's `lavfi` sources are built in.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::model::geom::NormRect;
 use crate::model::presets::{layout_rects, layout_z, LayoutType};
@@ -63,8 +63,28 @@ fn is_clip(path: &Path) -> bool {
 }
 
 /// True when both clips are already on disk.
+/// The program the demo shells out to. One name, in one place: the home screen
+/// checks for it, and `ensure` runs it.
+pub const FFMPEG: &str = "ffmpeg";
+
 pub fn is_ready(data_dir: &Path) -> bool {
     clips(data_dir).exist()
+}
+
+/// Is there an `ffmpeg` on `PATH`?
+///
+/// The demo is the only feature that shells out, and it is the first thing a
+/// new offline install tries, so the home screen asks once at startup instead
+/// of letting the click fail.
+pub fn ffmpeg_on_path() -> bool {
+    Command::new(FFMPEG)
+        .arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 /// Make sure both clips exist, generating them with ffmpeg if needed.
@@ -162,7 +182,7 @@ pub fn reaction_args(output: &Path) -> Vec<String> {
 }
 
 fn warn_if_ffmpeg_missing() -> Result<(), String> {
-    match Command::new("ffmpeg").arg("-version").output() {
+    match Command::new(FFMPEG).arg("-version").output() {
         Ok(output) if output.status.success() => Ok(()),
         Ok(_) => Err(
             "ffmpeg is installed but would not run; install the `ffmpeg` package and try again"
@@ -177,7 +197,7 @@ fn warn_if_ffmpeg_missing() -> Result<(), String> {
 }
 
 fn run_ffmpeg(args: &[String]) -> Result<(), String> {
-    let output = Command::new("ffmpeg")
+    let output = Command::new(FFMPEG)
         .args(args)
         .output()
         .map_err(|e| format!("could not run ffmpeg: {e}"))?;

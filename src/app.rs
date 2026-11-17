@@ -184,6 +184,9 @@ pub struct App {
     /// touched once per source.
     pub probed: Vec<String>,
     pub quit_saved: bool,
+    /// Whether `ffmpeg` was found on `PATH` when the app started. Only the demo
+    /// needs it, and the home screen says so before it is clicked.
+    pub ffmpeg_ready: bool,
 }
 
 impl App {
@@ -227,6 +230,7 @@ impl App {
             wallpaper: None,
             probed: Vec::new(),
             quit_saved: false,
+            ffmpeg_ready: crate::engine::demo::ffmpeg_on_path(),
         };
         app.reload_wallpaper(&cc.egui_ctx);
         // Continue where the last run left off, on the home screen.
@@ -248,7 +252,9 @@ impl App {
             }
         }
         self.screen = screen;
-        if screen == Screen::Sessions {
+        // Both screens print facts about what is on disk ("continue where you
+        // left off", thumbnails), so they re-read the directory on entry.
+        if matches!(screen, Screen::Sessions | Screen::Home) {
             self.refresh_sessions();
         }
     }

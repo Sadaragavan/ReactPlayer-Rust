@@ -33,15 +33,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             .color(theme::MUTED)
                             .size(13.0),
                     );
-                    ui.add_space(36.0);
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new("Drop video files anywhere in this window to open them")
+                            .color(theme::LINE_STRONG)
+                            .size(11.5),
+                    );
+                    ui.add_space(32.0);
 
                     let width = 340.0;
-                    let has_last = app
+                    let last = app
                         .settings
                         .last_session
                         .as_ref()
-                        .map(|id| app.sessions.iter().any(|summary| &summary.id == id))
-                        .unwrap_or(false);
+                        .and_then(|id| app.sessions.iter().find(|summary| &summary.id == id));
+                    let has_last = last.is_some();
+                    let last_missing = last.map(|summary| summary.missing_media).unwrap_or(0);
 
                     if has_last {
                         if ui
@@ -59,6 +66,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             .clicked()
                         {
                             continue_last(app, ui.ctx());
+                        }
+                        if last_missing > 0 {
+                            ui.add_space(5.0);
+                            ui.label(
+                                RichText::new(if last_missing == 1 {
+                                    "One of its files is no longer where it was".to_owned()
+                                } else {
+                                    format!("{last_missing} of its files are no longer where they were")
+                                })
+                                .color(theme::DANGER)
+                                .size(10.5),
+                            );
                         }
                         ui.add_space(8.0);
                     }
@@ -119,22 +138,34 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     ui.horizontal(|ui| {
                         let gap = (width - 2.0 * 166.0 - 8.0) / 2.0;
                         ui.add_space(gap.max(0.0));
-                        if ui
-                            .add_sized(
-                                [166.0, 34.0],
+                        let demo = ui
+                            .add_enabled(
+                                app.ffmpeg_ready,
                                 egui::Button::new(
-                                    RichText::new("Demo").color(theme::TEXT).size(12.5),
+                                    RichText::new("Demo")
+                                        .color(if app.ffmpeg_ready {
+                                            theme::TEXT
+                                        } else {
+                                            theme::MUTED
+                                        })
+                                        .size(12.5),
                                 )
                                 .fill(theme::BG)
                                 .stroke(theme::hairline(theme::LINE))
-                                .corner_radius(theme::RADIUS),
+                                .corner_radius(theme::RADIUS)
+                                .min_size(egui::Vec2::new(166.0, 34.0)),
                             )
                             .on_hover_text(
                                 "Generates two synthetic clips with ffmpeg and opens them, \
                                  with the reaction's flash 1500 ms after the source's.",
                             )
-                            .clicked()
-                        {
+                            .on_disabled_hover_text(
+                                "The demo generates its footage with ffmpeg, which is not on \
+                                 PATH. Install it (\"sudo pacman -S ffmpeg\" on Arch), then \
+                                 reopen Reaction Player. Everything else works without it.",
+                            );
+                        let _ = demo;
+                        if demo.clicked() {
                             app.open_demo(ui.ctx());
                         }
                         if ui

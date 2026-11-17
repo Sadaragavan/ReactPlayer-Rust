@@ -15,6 +15,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Align, Layout, PointerButton, RichText, Sense};
 
 use crate::app::{App, DragState};
+use crate::engine::runtime::Runtime;
 use crate::engine::video_frame::VideoFrame;
 use crate::gpu::renderer::{CompositorCallback, PixelRect, QuadDesc};
 use crate::gpu::renderer::CompareMode as QuadMode;
@@ -67,6 +68,60 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         canvas(app, ui);
     }
+}
+
+/// Is there anything decoded to put on the canvas?
+fn has_frames(app: &App) -> bool {
+    let Some(runtime) = app.runtime.as_ref() else {
+        return false;
+    };
+    let Some(session) = app.session.as_ref() else {
+        return false;
+    };
+    session
+        .layers
+        .iter()
+        .any(|layer| runtime.frame(&layer.id).is_some())
+}
+
+/// How many layers are still opening, and how many failed.
+fn layer_counts(app: &App) -> (usize, usize) {
+    let Some(runtime) = app.runtime.as_ref() else {
+        return (0, 0);
+    };
+    let Some(session) = app.session.as_ref() else {
+        return (0, 0);
+    };
+    let probing = session
+        .layers
+        .iter()
+        .filter(|layer| runtime.is_probing(&layer.id))
+        .count();
+    let failed = session
+        .layers
+        .iter()
+        .filter(|layer| runtime.error(&layer.id).is_some())
+        .count();
+    (probing, failed)
+}
+
+/// Every layer whose decoder has an error, as (layer name, message).
+fn failures(app: &App) -> Vec<(String, String)> {
+    let Some(runtime) = app.runtime.as_ref() else {
+        return Vec::new();
+    };
+    let Some(session) = app.session.as_ref() else {
+        return Vec::new();
+    };
+    session
+        .layers
+        .iter()
+        .filter_map(|layer| {
+            runtime
+                .error(&layer.id)
+                .map(|message| (layer.name.clone(), message))
+        })
+        .collect()
 }
 
 fn top_bar(app: &mut App, ui: &mut egui::Ui) {
@@ -126,6 +181,36 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui) {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button("Studio").clicked() {
                         app.open_studio(ui.ctx());
+                    }
+                    // A layer that failed to open says so here, permanently,
+                    // until the file is fixed or removed.
+                    let failures = failures(app);
+                    if !failures.is_empty() {
+                        let count = failures.len();
+                        let label = if count == 1 {
+                            "1 problem".to_owned()
+                        } else {
+                            format!("{count} problems")
+                        };
+                        let detail = failures
+                            .iter()
+                            .map(|(name, message)| format!("{name}: {message}"))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(label).color(theme::DANGER).size(11.5),
+                                )
+                                .fill(theme::BG)
+                                .stroke(egui::Stroke::new(1.0, theme::DANGER))
+                                .corner_radius(theme::RADIUS),
+                            )
+                            .on_hover_text(detail)
+                            .clicked()
+                        {
+                            app.layers_panel = true;
+                        }
                     }
                     if ui.button("Save").clicked() {
                         app.save_current();
@@ -196,19 +281,54 @@ fn canvas(app: &mut App, ui: &mut egui::Ui) {
             draw_selection(app, ui, rect);
             draw_guides(app, ui, rect);
 
-            // Right-click menu, on whatever layer is under the cursor.
+            // Nothing on the canvas yet: say why, rather than leaving a black
+            // rectangle that looks like a failure.
+            if !has_frames(app) {
+                let (probing, failed) = layer_counts(app);
+                let hint = if probing > 0 {
+                    if probing == 1 {
+                        "Opening the file…".to_owned()
+                    } else {
+                        format!("Opening {probing} files…")
+                    }
+                } else if failed > 0 {
+                    "No picture: the layers panel says why".to_owned()
+                } else if app.session.is_some() {
+                    "Press play to start".to_owned()
+                } else {
+                    String::new()
+                };
+                if !hint.is_empty() {
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        hint,
+                        egui::FontId::proportional(13.0),
+                        theme::MUTED,
+                    );
+                }
+            }
+
+            // Right-click menu, on whatever layer is under the cursor. On empty
+            // canvas it does not open: the menu can delete a layer, and it must
+            // never act on a layer the pointer is not over.
             let point = ui
                 .ctx()
                 .input(|input| input.pointer.interact_pos())
                 .map(|pos| to_norm(rect, pos));
+            let hit = point.and_then(|point| {
+                let session = app.session.as_ref()?;
+                let index = session.hit_test(point)?;
+                Some(session.layers[index].id.clone())
+            });
             if response.clicked_by(PointerButton::Secondary)
-                && let (Some(session), Some(point)) = (app.session.as_ref(), point)
-                && let Some(index) = session.hit_test(point)
+                && let Some(id) = hit.as_ref()
             {
-                let id = session.layers[index].id.clone();
-                app.select(&id);
+                app.select(id);
             }
-            let _ = response.context_menu(|ui| context_menu(app, ui));
+            if hit.is_some() {
+                let _ = response.context_menu(|ui| context_menu(app, ui));
+            }
         });
 }
 
@@ -937,6 +1057,105 @@ fn scrubber(
 
 // ---- layers panel --------------------------------------------------------
 
+/// One row of the layers panel: the layer itself, plus what its decoder is
+/// doing right now.
+struct Row {
+    id: String,
+    name: String,
+    visible: bool,
+    locked: bool,
+    selected: bool,
+    status: Status,
+}
+
+/// The few words a layer row has room for underneath its name.
+enum Status {
+    /// The file is being probed and opened.
+    Loading,
+    /// Opened, but no frame has come back yet.
+    Waiting,
+    /// Decoding, on this backend, converted through swscale or not.
+    Running {
+        backend: &'static str,
+        converted: bool,
+    },
+    /// The decoder gave up; this must stay on screen until it is fixed.
+    Failed(String),
+}
+
+impl Status {
+    fn text(&self) -> String {
+        match self {
+            Self::Loading => "opening…".to_owned(),
+            Self::Waiting => "no frame yet".to_owned(),
+            Self::Running {
+                backend,
+                converted: false,
+            } => (*backend).to_owned(),
+            Self::Running {
+                backend,
+                converted: true,
+            } => format!("{backend} · converted"),
+            Self::Failed(message) => shorten(message, 34),
+        }
+    }
+
+    fn colour(&self) -> egui::Color32 {
+        match self {
+            Self::Failed(_) => theme::DANGER,
+            _ => theme::MUTED,
+        }
+    }
+
+    fn tooltip(&self) -> Option<String> {
+        match self {
+            Self::Failed(message) => Some(message.clone()),
+            Self::Running { converted: true, .. } => Some(
+                "The source is not 8-bit 4:2:0, so frames go through swscale first. \
+                 Playback is correct, just not zero-copy."
+                    .to_owned(),
+            ),
+            _ => None,
+        }
+    }
+
+    fn is_failure(&self) -> bool {
+        matches!(self, Self::Failed(_))
+    }
+}
+
+/// One line of text, cut at `limit` characters without splitting a code point.
+fn shorten(text: &str, limit: usize) -> String {
+    let flat = text.replace('\n', " ");
+    if flat.chars().count() <= limit {
+        flat
+    } else {
+        let mut out: String = flat.chars().take(limit.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// Ask the runtime what a layer is doing; the UI never probes by itself.
+fn layer_status(runtime: Option<&Runtime>, id: &str) -> Status {
+    let Some(runtime) = runtime else {
+        return Status::Waiting;
+    };
+    if let Some(message) = runtime.error(id) {
+        return Status::Failed(message);
+    }
+    if runtime.is_probing(id) {
+        return Status::Loading;
+    }
+    if runtime.frame(id).is_some() {
+        return Status::Running {
+            backend: runtime.backend(id).label(),
+            converted: runtime.converted(id),
+        };
+    }
+    Status::Waiting
+}
+
 fn layers_panel(app: &mut App, ui: &mut egui::Ui) {
     egui::Panel::right("layers")
         .exact_size(268.0)
@@ -970,23 +1189,33 @@ fn layers_panel(app: &mut App, ui: &mut egui::Ui) {
             // Topmost first: the panel reads like the stack looks.
             let mut order = session.paint_order();
             order.reverse();
-            let rows: Vec<(String, String, bool, bool, bool)> = order
+            let rows: Vec<Row> = order
                 .iter()
                 .map(|index| {
                     let layer = &session.layers[*index];
-                    (
-                        layer.id.clone(),
-                        layer.name.clone(),
-                        layer.visible,
-                        layer.locked,
-                        app.selection.as_deref() == Some(layer.id.as_str()),
-                    )
+                    Row {
+                        id: layer.id.clone(),
+                        name: layer.name.clone(),
+                        visible: layer.visible,
+                        locked: layer.locked,
+                        selected: app.selection.as_deref() == Some(layer.id.as_str()),
+                        status: layer_status(app.runtime.as_ref(), &layer.id),
+                    }
                 })
                 .collect();
             let count = rows.len();
 
-            for (display_row, (id, name, visible, locked, selected)) in
-                rows.into_iter().enumerate()
+            for (
+                display_row,
+                Row {
+                    id,
+                    name,
+                    visible,
+                    locked,
+                    selected,
+                    status,
+                },
+            ) in rows.into_iter().enumerate()
             {
                 let dropped = ui
                     .dnd_drop_zone::<String, _>(
@@ -994,6 +1223,8 @@ fn layers_panel(app: &mut App, ui: &mut egui::Ui) {
                             .fill(if selected { theme::FILL_ACTIVE } else { theme::BG })
                             .stroke(if selected {
                                 egui::Stroke::new(1.0, theme::ACCENT)
+                            } else if status.is_failure() {
+                                egui::Stroke::new(1.0, theme::DANGER)
                             } else {
                                 theme::hairline(theme::LINE)
                             })
@@ -1046,6 +1277,23 @@ fn layers_panel(app: &mut App, ui: &mut egui::Ui) {
                                                 }
                                             },
                                         );
+                                    });
+                                    // What this layer is doing: the decoder it
+                                    // ended up on, whether the source had to be
+                                    // converted, or why it failed. A failure is
+                                    // the one thing that must never disappear
+                                    // with a toast.
+                                    let mut detail = ui.label(
+                                        RichText::new(status.text())
+                                            .color(status.colour())
+                                            .size(10.0),
+                                    );
+                                    if let Some(full) = status.tooltip() {
+                                        detail = detail.on_hover_text(full);
+                                    }
+                                    let _ = detail;
+                                },
+                            );
                                     });
                                 },
                             );
