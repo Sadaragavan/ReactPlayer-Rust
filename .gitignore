@@ -1,0 +1,21 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo's local overrides and registry cache
+.cargo/
+vendor/
+
+# The API notes are scratch material from the writing session, not part of
+# the shipped source.
+/.arena-notes/
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Generated demo media and local session data
+/demo/
+*.rplay.json
