@@ -684,6 +684,21 @@ impl Runtime {
         self.pause(session);
     }
 
+    /// Drop a layer's decoder and free its audio slot, so the next
+    /// [`Self::sync_session`] opens the file again. Used when a session points a
+    /// layer at a different file: the worker holds the old path, and only a
+    /// fresh one will pick the new up.
+    pub fn forget_layer(&mut self, layer_id: &str) {
+        if let Some(state) = self.layers.remove(layer_id)
+            && let Some(track) = state.track.as_ref() {
+            track.try_send(Command::Shutdown);
+        }
+        if let Some(slot) = self.slots.remove(layer_id) {
+            self.used_slots[slot] = false;
+            self.audio.silence(slot);
+        }
+    }
+
     /// True when at least one layer has a decoder open, i.e. whether the player
     /// has anything to draw.
     pub fn has_media(&self) -> bool {

@@ -175,6 +175,14 @@ impl MediaSource {
         }
     }
 
+    /// The local path, when this is a file.
+    pub fn path(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::File { path } => Some(path),
+            Self::Url { .. } => None,
+        }
+    }
+
     /// A local file that has since moved breaks playback; a URL is assumed to
     /// work until FFmpeg says otherwise.
     pub fn exists(&self) -> bool {

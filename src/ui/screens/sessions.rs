@@ -51,11 +51,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui.add_space(12.0);
 
             if app.sessions.is_empty() {
-                ui.label(
-                    RichText::new("Nothing saved yet. Start a session, or press Demo on the home screen.")
-                        .color(theme::MUTED)
-                        .size(12.5),
-                );
+                // Say what actually works on this machine: the demo needs
+                // FFmpeg installed, and pointing at a button that cannot run is
+                // worse than saying nothing.
+                let hint = if app.ffmpeg_ready {
+                    "Nothing saved yet. Start a session, or press Demo on the home screen."
+                } else {
+                    "Nothing saved yet. Start a session on the home screen, or save a copy of \"Demo\" there once FFmpeg is installed."
+                };
+                ui.label(RichText::new(hint).color(theme::MUTED).size(12.5));
+                if !app.ffmpeg_ready {
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new("FFmpeg is not on the PATH, so nothing can be decoded yet.")
+                            .color(theme::DANGER)
+                            .size(11.5),
+                    );
+                }
                 return;
             }
 

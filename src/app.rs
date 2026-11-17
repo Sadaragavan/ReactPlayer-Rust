@@ -62,6 +62,10 @@ impl Capture {
     }
 }
 
+/// Extensions the file dialogs offer. FFmpeg demuxes more, but these are what a
+/// phone or a camera writes.
+pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "mov", "webm", "avi", "m4v", "ts"];
+
 /// The alignment studio's state.
 pub struct Studio {
     pub a: Option<String>,
@@ -525,6 +529,54 @@ impl App {
         if let (Some(session), Some(runtime)) = (self.session.as_mut(), self.runtime.as_mut()) {
             runtime.sync_session(session, &self.settings);
         }
+    }
+
+    /// Point the selected layer at a file the user picks, keeping its offset,
+    /// crop and rectangle. The decoder is thrown away and the file re-probed, so
+    /// a session whose media moved is repairable without rebuilding it.
+    pub fn relink_layer(&mut self, _ctx: &egui::Context) {
+        let Some(id) = self.selection.clone() else {
+            self.toasts.error("Select the layer to relink first.");
+            return;
+        };
+        let start_dir = self
+            .session
+            .as_ref()
+            .and_then(|session| session.layer(&id))
+            .and_then(|layer| layer.source.path())
+            .and_then(|path| path.parent())
+            .map(std::path::Path::to_path_buf);
+        let mut dialog = rfd::FileDialog::new().add_filter("Video", VIDEO_EXTENSIONS);
+        if let Some(dir) = start_dir {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.pick_file() else {
+            return;
+        };
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        let relinked = self
+            .session
+            .as_mut()
+            .map(|session| session.relink(&id, MediaSource::file(path)))
+            .unwrap_or(false);
+        if !relinked {
+            return;
+        }
+        // Forget what was probed, stop the old worker, and let the tick that
+        // follows open the new file.
+        self.probed.retain(|seen| seen != &id);
+        if let Some(runtime) = self.runtime.as_mut() {
+            runtime.forget_layer(&id);
+        }
+        self.sync_engine();
+        if let Some(session) = self.session.as_mut() {
+            session.touch();
+        }
+        self.save_current();
+        self.toasts.success(format!("Relinked to {name}."));
     }
 
     // ---- presets -------------------------------------------------------
@@ -1214,7 +1266,7 @@ impl App {
             && let Some(files) = rfd::FileDialog::new()
                 .add_filter(
                     "Video",
-                    &["mp4", "mkv", "mov", "webm", "avi", "m4v", "ts", "m2ts"],
+                    crate::app::VIDEO_EXTENSIONS,
                 )
                 .pick_files()
         {

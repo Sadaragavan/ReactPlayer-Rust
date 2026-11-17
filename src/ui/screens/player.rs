@@ -681,6 +681,14 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui) {
         app.copy_frame();
         ui.close();
     }
+    if ui
+        .button("Relink this file…")
+        .on_hover_text("Point this layer at another copy of the video, keeping its crop and timing")
+        .clicked()
+    {
+        app.relink_layer(ui.ctx());
+        ui.close();
+    }
     ui.separator();
     if ui.button("Bring to front").clicked() {
         if let Some(session) = app.session.as_mut() {
@@ -1253,6 +1261,15 @@ fn layers_panel(app: &mut App, ui: &mut egui::Ui) {
                                         ui.with_layout(
                                             Layout::right_to_left(Align::Center),
                                             |ui| {
+                                                if status.is_failure()
+                                                    && ui
+                                                        .small_button("Relink…")
+                                                        .on_hover_text("Pick the file again")
+                                                        .clicked()
+                                                {
+                                                    app.select(&id);
+                                                    app.relink_layer(ui.ctx());
+                                                }
                                                 if ui
                                                     .small_button(if visible { "👁" } else { "—" })
                                                     .on_hover_text("Show or hide")

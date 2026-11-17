@@ -275,6 +275,14 @@ impl AudioEngine {
             slot.set_active(false);
         }
     }
+
+    /// Silence one slot, e.g. when its layer is being replaced.
+    pub fn silence(&self, index: usize) {
+        if let Some(slot) = self.slots.get(index) {
+            slot.set_active(false);
+            let _ = slot.bump_epoch();
+        }
+    }
 }
 
 /// The state the output callback owns.
