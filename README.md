@@ -244,14 +244,22 @@ master audio layer has no footage at the playhead.
 
 Honesty first, because this matters more than a badge:
 
-* `cargo check --all-targets` and `cargo test --all-targets` run in CI on Arch
-  Linux inside the `archlinux:latest` container (see
-  `.github/workflows/ci.yml`), against the system FFmpeg. The full compiler
-  output is committed back to the branch as `ci-log.txt`.
+* Every run of `.github/workflows/ci.yml` checks out the branch inside the
+  `archlinux:latest` container, installs the packages this README tells you to
+  install, and runs `cargo check --all-targets`, `cargo test --all-targets` and
+  `cargo clippy --all-targets --all-features -- -D warnings`. The job fails if
+  any of them fails or if clippy emits a single warning, and the whole output is
+  committed back to the branch as `ci-log.txt`.
+* As of the current commit that is **139 unit tests, zero compiler warnings,
+  zero clippy warnings**.
+* The wgpu shader is not just written: `gpu::renderer::tests::shader_parses_and_validates`
+  parses `shader.wgsl` with `naga` and validates it, and a second test checks that
+  the uniform struct Rust writes is the same size and layout the WGSL declares.
 * CI is headless. **Hardware decoding, the audio device and the actual GPU
-  compositing are not exercised there** — no driver, no sound card, no display.
-  Those paths are written, documented and unit-tested where they can be, but they
-  have not been run end to end on real hardware by the author of this build.
+  compositing are not exercised there** — no driver, no sound card, no display,
+  and no window is ever opened. Those paths are written, documented and unit
+  tested where they can be, but they have not been run end to end on real
+  hardware by the author of this build.
 * The CPU-side picture path (BT.709 YUV → RGBA, crops, strides) and every piece
   of timeline, geometry, snapping, drift and alignment arithmetic **are** unit
   tested, including YUV420P and NV12 with `stride != width`.
