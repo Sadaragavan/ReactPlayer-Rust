@@ -22,6 +22,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         )
         .show(ui, |ui| {
             let has_session = app.session.is_some();
+            let layer_count = app
+                .session
+                .as_ref()
+                .map(|session| session.layers.len())
+                .unwrap_or(0);
+            let can_compare = layer_count >= 2;
             ui.columns(2, |columns| {
                 // ---- the library -----------------------------------
                 let ui = &mut columns[0];
@@ -74,6 +80,28 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                             ui.label(
                                                 RichText::new(kind).color(theme::MUTED).size(11.0),
                                             );
+                                            // A layout has a fixed number of
+                                            // places. Say when this session
+                                            // cannot fill them, rather than
+                                            // leaving a silently partial result.
+                                            let slots = preset.slots.len();
+                                            if has_session && slots > layer_count {
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "needs {slots} layers; this session has {layer_count}"
+                                                    ))
+                                                    .color(theme::DANGER)
+                                                    .size(10.5),
+                                                );
+                                            } else if has_session && slots < layer_count {
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "places the first {slots} of {layer_count} layers"
+                                                    ))
+                                                    .color(theme::MUTED)
+                                                    .size(10.5),
+                                                );
+                                            }
                                         });
                                         ui.with_layout(
                                             Layout::right_to_left(Align::Center),
@@ -164,7 +192,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
-                            has_session,
+                            can_compare,
                             egui::Button::new(
                                 RichText::new("Open the studio").color(theme::BG).size(13.0),
                             )
@@ -173,6 +201,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             .corner_radius(theme::RADIUS)
                             .min_size(egui::vec2(160.0, 30.0)),
                         )
+                        .on_disabled_hover_text(if has_session {
+                            "The studio compares two layers; this session has one. Add another \
+                             video first."
+                        } else {
+                            "Open a session first."
+                        })
                         .clicked()
                     {
                         app.open_studio(&ctx);

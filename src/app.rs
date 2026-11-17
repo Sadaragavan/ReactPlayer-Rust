@@ -664,8 +664,13 @@ impl App {
 
     /// Open the studio with two sensible layers: the source is the reference.
     pub fn open_studio(&mut self, ctx: &egui::Context) {
-        if self.session.is_none() {
+        let Some(layers) = self.session.as_ref().map(|session| session.layers.len()) else {
             self.toasts.error("Open a session to align.");
+            return;
+        };
+        if layers < 2 {
+            self.toasts
+                .error("The studio compares two layers; add another video first.");
             return;
         }
         let _ = ctx;
@@ -727,8 +732,9 @@ impl App {
         self.studio.capture_b = Some(capture_b);
         if let Some(delta) = self.studio.delta_us() {
             self.studio.note = Some(format!(
-                "B is {} the flash.",
-                if delta >= 0 { "after" } else { "before" }
+                "B lands {} the flash by {} ms.",
+                if delta >= 0 { "after" } else { "before" },
+                delta.abs() / 1_000
             ));
             self.toasts
                 .info(format!("Captured: offset_B = {:.3} s.", delta as f64 / 1e6));

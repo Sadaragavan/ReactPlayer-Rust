@@ -1078,7 +1078,7 @@ struct Row {
 }
 
 /// The few words a layer row has room for underneath its name.
-enum Status {
+pub(crate) enum Status {
     /// The file is being probed and opened.
     Loading,
     /// Opened, but no frame has come back yet.
@@ -1093,7 +1093,7 @@ enum Status {
 }
 
 impl Status {
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         match self {
             Self::Loading => "opening…".to_owned(),
             Self::Waiting => "no frame yet".to_owned(),
@@ -1109,14 +1109,14 @@ impl Status {
         }
     }
 
-    fn colour(&self) -> egui::Color32 {
+    pub(crate) fn colour(&self) -> egui::Color32 {
         match self {
             Self::Failed(_) => theme::DANGER,
             _ => theme::MUTED,
         }
     }
 
-    fn tooltip(&self) -> Option<String> {
+    pub(crate) fn tooltip(&self) -> Option<String> {
         match self {
             Self::Failed(message) => Some(message.clone()),
             Self::Running { converted: true, .. } => Some(
@@ -1128,7 +1128,7 @@ impl Status {
         }
     }
 
-    fn is_failure(&self) -> bool {
+    pub(crate) fn is_failure(&self) -> bool {
         matches!(self, Self::Failed(_))
     }
 }
@@ -1146,7 +1146,7 @@ fn shorten(text: &str, limit: usize) -> String {
 }
 
 /// Ask the runtime what a layer is doing; the UI never probes by itself.
-fn layer_status(runtime: Option<&Runtime>, id: &str) -> Status {
+pub(crate) fn layer_status(runtime: Option<&Runtime>, id: &str) -> Status {
     let Some(runtime) = runtime else {
         return Status::Waiting;
     };

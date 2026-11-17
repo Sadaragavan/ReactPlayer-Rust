@@ -9,6 +9,7 @@
 use eframe::egui::{self, Align, Layout, RichText, Sense};
 
 use super::header;
+use super::player::{layer_status, Status};
 use crate::app::{App, CompareMode, Screen};
 use crate::gpu::renderer::{
     CompareMode as QuadMode, CompositorCallback, PixelRect, QuadDesc,
@@ -220,15 +221,39 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
                 _ => {
-                    ui.label(
-                        RichText::new(
-                            "Step each side to the same moment, then press Capture: the last \
-                             frames are kept with their exact timestamps so the comparison can \
-                             be re-read without touching the decoders.",
-                        )
-                        .color(theme::MUTED)
-                        .size(11.5),
-                    );
+                    // The whole workflow in three lines, because nothing else on
+                    // this screen says what order the buttons want.
+                    for (n, line) in [
+                        ("1", "Pick the reference under A and the other clip under B."),
+                        (
+                            "2",
+                            "Step each side with the buttons under its picture until the same \
+                             moment shows on both.",
+                        ),
+                        (
+                            "3",
+                            "Press Capture, read the offset, then Apply to session to keep it.",
+                        ),
+                    ] {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(n).color(theme::ACCENT).size(11.5).monospace(),
+                            );
+                            ui.label(RichText::new(line).color(theme::MUTED).size(11.5));
+                        });
+                    }
+                    if app.studio.capture_a.is_some() || app.studio.capture_b.is_some() {
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(
+                                "Captured frames are kept with their timestamps, so the \
+                                 comparison can be re-read without touching the decoders. \
+                                 Capture again to replace them.",
+                            )
+                            .color(theme::MUTED)
+                            .size(11.0),
+                        );
+                    }
                 }
             }
 
@@ -321,12 +346,19 @@ fn pane(app: &mut App, ui: &mut egui::Ui, id: Option<&str>, title: &str) {
                 ));
             }
             None => {
+                // "opening…" forever is a lie when the decoder already gave
+                // up: say which of the three states this side is in.
+                let (text, colour) = match layer_status(app.runtime.as_ref(), id) {
+                    Status::Failed(_) => ("cannot open this file", theme::DANGER),
+                    Status::Loading => ("opening…", theme::MUTED),
+                    _ => ("waiting for the decoder", theme::MUTED),
+                };
                 ui.painter().text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
-                    "opening…",
+                    text,
                     egui::FontId::proportional(11.0),
-                    theme::MUTED,
+                    colour,
                 );
             }
         }
