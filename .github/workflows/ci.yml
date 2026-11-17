@@ -62,17 +62,26 @@ jobs:
           path: ci-log.txt
       - name: publish log
         if: always()
+        env:
+          BRANCH: ${{ github.ref_name }}
         run: |
+          set -x
           git config user.name ci
           git config user.email ci@localhost
           git add -f ci-log.txt
-          git commit -q -m "ci: run report [skip ci]" || true
-          git pull --rebase -q origin "$GITHUB_REF_NAME" || true
-          for i in 1 2 3 4 5; do
-            if git push -q origin "HEAD:refs/heads/$GITHUB_REF_NAME"; then
+          git commit -q -m "ci: run report [skip ci]" || echo "nothing new to commit"
+          for i in 1 2 3 4 5 6; do
+            git fetch -q origin "$BRANCH"
+            # Put our one commit back on top of whatever landed meanwhile.
+            if ! git rebase -q FETCH_HEAD; then
+              git rebase --abort || true
+              git reset -q --soft FETCH_HEAD
+              git commit -q -m "ci: run report [skip ci]" || true
+            fi
+            if git push -q origin "HEAD:refs/heads/$BRANCH"; then
               echo "pushed"
               break
             fi
-            sleep 5
+            sleep 6
           done
-          git log --oneline -2
+          git log --oneline -3
