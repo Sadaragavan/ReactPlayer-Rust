@@ -493,7 +493,12 @@ mod tests {
     fn normalized_round_trip() {
         let r = NormRect::new(0.1, 0.2, 0.3, 0.4);
         let px = r.to_px(canvas());
-        assert_eq!(px, PxRect::new(160.0, 180.0, 480.0, 360.0));
+        // 0.3 * 1600 lands on 480.00003 in f32, which is the arithmetic being
+        // tested here, not the rounding.
+        assert!((px.x - 160.0).abs() < 1e-3, "{px:?}");
+        assert!((px.y - 180.0).abs() < 1e-3, "{px:?}");
+        assert!((px.w - 480.0).abs() < 1e-3, "{px:?}");
+        assert!((px.h - 360.0).abs() < 1e-3, "{px:?}");
         // A round trip through pixels divides by the canvas size twice, so it
         // lands within float noise rather than exactly on the input.
         let back = NormRect::from_px(px, canvas());

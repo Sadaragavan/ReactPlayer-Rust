@@ -474,7 +474,8 @@ mod tests {
         assert_eq!(list[0].name, "newer");
         assert_eq!(list[0].layer_count, 2);
         assert_eq!(list[1].duration_us, 12_000_000);
-        assert_eq!(list[0].missing_media, 1); // /tmp/reaction.mp4 is not there
+        // Neither /tmp/source.mp4 nor /tmp/reaction.mp4 exists here.
+        assert_eq!(list[0].missing_media, 2);
         store.delete_session(&b.id).unwrap();
         assert_eq!(store.list_sessions().len(), 1);
         let _ = fs::remove_dir_all(root);

@@ -470,12 +470,19 @@ impl Compositor {
                 quad.crop[0] + (quad.crop[2] - quad.crop[0]) * fx1,
                 quad.crop[1] + (quad.crop[3] - quad.crop[1]) * fy1,
             ];
+            // A compare needs a second source; without one the quad is a plain
+            // picture even if the caller asked for a wipe or an onion skin.
+            let mode = if quad.compare.is_compare() && quad.other.is_none() {
+                CompareMode::Single
+            } else {
+                quad.compare
+            };
             let uniform = QuadUniform::build(
                 crop,
                 [visible.x, visible.y, visible.w, visible.h],
                 &quad.frame,
                 quad.opacity,
-                quad.compare,
+                mode,
                 target,
                 self.srgb_target,
             );

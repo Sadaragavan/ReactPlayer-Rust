@@ -120,7 +120,6 @@ impl AudioStatus {
 /// The audio device, its slots, and the stream that mixes them.
 pub struct AudioEngine {
     slots: Vec<Arc<AudioSlot>>,
-    clock: Arc<MasterClock>,
     master_volume: Arc<AtomicU32>,
     status: AudioStatus,
     device_rate: u32,
@@ -147,7 +146,6 @@ impl AudioEngine {
         let Some(device) = host.default_output_device() else {
             return Self {
                 slots,
-                clock,
                 master_volume,
                 status: AudioStatus::NoDevice,
                 device_rate: super::sync_clock::DEFAULT_RATE,
@@ -165,8 +163,7 @@ impl AudioEngine {
             Err(e) => {
                 return Self {
                     slots,
-                    clock,
-                    master_volume,
+                        master_volume,
                     status: AudioStatus::Failed(format!("{e}")),
                     device_rate: super::sync_clock::DEFAULT_RATE,
                     channels: 2,
@@ -233,7 +230,6 @@ impl AudioEngine {
         }) {
             Ok(stream) => Self {
                 slots,
-                clock,
                 master_volume,
                 status: AudioStatus::Running {
                     device: device_name,
@@ -246,7 +242,6 @@ impl AudioEngine {
             },
             Err(e) => Self {
                 slots,
-                clock,
                 master_volume,
                 status: AudioStatus::Failed(format!("{e}")),
                 device_rate: rate,
@@ -390,7 +385,6 @@ mod tests {
 
     #[test]
     fn slots_start_inactive_and_unmuted() {
-        let clock = MasterClock::new();
         let ring = HeapRb::<f32>::new(64);
         let (prod, _cons) = ring.split();
         let slot = AudioSlot::new(prod);
@@ -399,7 +393,6 @@ mod tests {
         assert!(slot.take_producer().is_some());
         // Only the first take succeeds.
         assert!(slot.take_producer().is_none());
-        let _ = clock;
     }
 
     #[test]

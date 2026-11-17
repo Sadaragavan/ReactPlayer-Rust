@@ -27,7 +27,6 @@ use crate::ui::{theme, widgets};
 
 /// Where the canvas paints its rectangles.
 const HANDLE_SIZE: f32 = 7.0;
-const SNAP_TOLERANCE_PX: f32 = 8.0;
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if app.session.is_none() {
