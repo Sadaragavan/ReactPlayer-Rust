@@ -132,16 +132,24 @@ resize it, double-click to bring it forward. Moves snap to the canvas edges, the
 centre lines and the other layers' edges and centres, with 1 px guides.
 Right-click a layer for *Copy this frame*, the z-order actions, crop sliders,
 opacity, fit mode, crop, master audio, lock, visibility, *Reset transform* and
-*Remove layer*. Layers can also be reordered by dragging in the layers panel, and
-hidden and locked individually. *Lock layout* freezes all rectangles.
+*Remove layer* (and *Relink this file…*, for a video that has moved). Layers can
+also be reordered by dragging in the layers panel, hidden and locked individually,
+and added with **+ Add layer…** or by dropping files anywhere in the window —
+they land under the cursor. Each row in the panel carries its own state line:
+which decoder it opened on, whether the source had to be converted, or why it
+failed. A failed layer gets a red outline, a *Relink…* button and a permanent
+*N problems* chip in the top bar, because a failure that only shows in a toast
+disappears. *Lock layout* freezes all rectangles.
 
 **Transport.** The scrubber is the union timeline with one span per layer; the
 playhead, the per-layer spans and the timeline readout are all live. Next to it:
 play/pause, the engine badge, link/unlink, master volume, ±1/±10/±100 ms
-steppers, theater mode, full screen and the layers panel.
+steppers, theater mode, full screen, the layers panel and a `?` button that opens
+the shortcut list.
 
-**Alignment Studio.** Pick A (reference) and B (other), step each side
-independently by 1 or 10 frames, then `C` captures the last frames of both sides
+**Alignment Studio.** It compares two layers, so it stays disabled until the
+session has two. Pick A (reference) and B (other), step each side
+independently by 1 or 10 frames (the buttons under each picture), then `C` captures the last frames of both sides
 with their exact `pts_us`. Compare with **Onion Skin** (a mix slider, default
 50 %) or **Wipe Line** (a 1–2 px accent divider you can drag). The measured
 difference is `offset_B = pts_B − pts_A`; *Apply to session* writes it into B.
@@ -151,8 +159,10 @@ convention, and it has a unit test.
 
 **Sessions** are saved under your data directory, with a thumbnail, and can be
 renamed, duplicated, deleted, exported as `.rplay.json` and imported again. If a
-file moved, the session card says how many layers are missing and the player
-offers to relink.
+file moved, the session card says how many layers are missing, and in the player
+the layer's row says what the decoder reported and offers *Relink…*; the crop,
+rectangle and offset are kept. A layout preset that needs more layers than the
+session has says so in red instead of applying itself partially.
 
 ## Keyboard
 
@@ -190,7 +200,11 @@ data* deletes all of it after asking, and never touches your videos.
 
 ## Demo clips
 
-The Demo button runs FFmpeg from Rust to generate:
+The Demo button runs the `ffmpeg` command to generate its footage, so only it
+needs FFmpeg installed: the button is disabled and says so when `ffmpeg` is not
+on the PATH, and *Settings → Decoding* reports the same thing. Playback of your
+own files never shells out — it decodes in-process through libavcodec.
+It generates:
 
 ```
 source.mp4     testsrc2, 1280x720@30, 8 s, white flash in the first 200 ms
@@ -200,8 +214,9 @@ reaction.mp4   flat background, same size, white flash at 1500 ms
 The demo session ships with the reaction offset at `+1_500_000 µs`, so the two
 flashes line up — a visible proof that sync works. The same commands live in
 `scripts/make-demo-clips.sh` if you want to generate them ahead of time or on a
-machine without a GPU. If `ffmpeg` is not on `PATH`, the app says so and tells you
-which package to install; it does not fail silently.
+machine without a GPU. If `ffmpeg` is not on `PATH`, the app says so — on the
+home screen, in *Settings → Decoding*, and on the drop overlay — instead of
+failing silently.
 
 ## How sync actually works
 

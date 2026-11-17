@@ -193,7 +193,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         available.min,
                         egui::vec2(size.w, size.h.max(80.0)),
                     );
-                    ui.allocate_rect(rect, Sense::hover());
+                    let response = ui.allocate_rect(rect, Sense::click_and_drag());
+                    // In wipe mode the divider is draggable: the picture itself
+                    // is the only thing that shows where it is, so it should also
+                    // be the thing that moves it.
+                    if app.studio.mode == CompareMode::Wipe {
+                        let response = response.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                        if (response.dragged() || response.clicked())
+                            && let Some(pos) = ui.ctx().pointer_interact_pos()
+                        {
+                            app.studio.wipe_percent =
+                                ((pos.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0);
+                        }
+                    }
+                    let _ = response;
                     if let (Some(frame_a), Some(frame_b)) = (a.newest(), b.newest()) {
                         let compare = match app.studio.mode {
                             CompareMode::Onion => QuadMode::OnionSkin {

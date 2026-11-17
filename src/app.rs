@@ -373,7 +373,7 @@ impl App {
                 .save_thumbnail(&session.id, thumb.width, thumb.height, &thumb.data)
             {
                 Ok(path) => session.thumbnail = path,
-                Err(message) => self.toasts.error(format!("thumbnail: {message}")),
+                Err(message) => self.toasts.error(format!("Could not write the thumbnail: {message}")),
             }
         }
         match self.store.save_session(&mut session) {
@@ -384,7 +384,7 @@ impl App {
                 }
                 self.refresh_sessions();
             }
-            Err(message) => self.toasts.error(format!("could not save: {message}")),
+            Err(message) => self.toasts.error(format!("Could not save: {message}")),
         }
         self.save_settings();
     }
@@ -394,7 +394,7 @@ impl App {
             self.settings.last_session = Some(session.id.clone());
         }
         if let Err(message) = self.store.save_settings(&self.settings) {
-            self.toasts.error(format!("could not save preferences: {message}"));
+            self.toasts.error(format!("Could not save preferences: {message}"));
         }
     }
 
