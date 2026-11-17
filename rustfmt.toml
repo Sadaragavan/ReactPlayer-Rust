@@ -1,0 +1,5 @@
+# `style_edition = "2024"` is what teaches rustfmt about let-chains, which this
+# crate uses throughout (`if cond && let Some(x) = y`). Without it rustfmt parses
+# them but leaves the layout alone.
+style_edition = "2024"
+max_width = 100
