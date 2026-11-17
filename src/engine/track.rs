@@ -632,42 +632,40 @@ impl VideoWorker {
 const MAX_SEEK_FRAMES: usize = 900;
 
 /// Demuxer, decoder and the scratch frames it needs.
+///
+/// The decoder itself is the safe `ffmpeg-next` wrapper; only the hardware
+/// attach (before the context is opened) and the plane copy need raw access.
 struct Decoder {
     input: ffmpeg::format::context::Input,
     stream_index: usize,
-    context: ffmpeg::codec::context::Context,
-    hw: Option<HwDecoder>,
+    decoder: ffmpeg::decoder::Video,
     time_base: ffmpeg::Rational,
-    /// Receive target for system-memory decoding.
-    raw: *mut ffi::AVFrame,
-    /// Transfer target for hardware frames.
-    transferred: *mut ffi::AVFrame,
-    /// swscale target for source formats the compositor cannot sample.
-    scaled: *mut ffi::AVFrame,
+    /// The frame as the decoder produced it (may live in device memory).
+    raw: ffmpeg::frame::Video,
+    /// Where a hardware frame is transferred to.
+    transferred: ffmpeg::frame::Video,
+    /// Where swscale puts a source format the compositor cannot sample.
+    scaled: Option<ffmpeg::frame::Video>,
     sws: *mut ffi::SwsContext,
+    sws_source: (u32, u32, c_int),
+    /// The device pixel format, when hardware is in use.
+    hw_format: Option<c_int>,
     info: MediaInfo,
     backend: HwBackend,
     frame_us: i64,
     rotation: i32,
     rotation_probed: bool,
-    eof: bool,
 }
 
-// SAFETY: every raw pointer is owned exclusively by this struct, was allocated
-// by FFmpeg for this decoder, and is only used from the worker thread that owns
-// the struct.
+// SAFETY: the only non-`Send` member is the swscale context, which is used
+// exclusively by the worker thread that owns this decoder and freed in `Drop`.
 unsafe impl Send for Decoder {}
 
 impl Drop for Decoder {
     fn drop(&mut self) {
-        // SAFETY: each pointer is either null or was allocated by FFmpeg for
-        // this decoder and is released exactly once, here.
+        // SAFETY: a non-null swscale context was created by `scale_to_yuv420`
+        // and is released exactly once, here.
         unsafe {
-            for frame in [&mut self.raw, &mut self.transferred, &mut self.scaled] {
-                if !frame.is_null() {
-                    ffi::av_frame_free(frame);
-                }
-            }
             if !self.sws.is_null() {
                 ffi::sws_freeContext(self.sws);
             }
@@ -678,7 +676,7 @@ impl Drop for Decoder {
 impl Decoder {
     fn open(source: &MediaSource, hw_accel: HwAccelPref) -> Result<Self, String> {
         let _ = ffmpeg::init();
-        let mut input = ffmpeg::format::input(&source.location())
+        let input = ffmpeg::format::input(&source.location())
             .map_err(|e| format!("could not open {}: {e}", source.display()))?;
         let stream = input
             .streams()
@@ -691,72 +689,77 @@ impl Decoder {
         let codec = ffmpeg::codec::decoder::find(parameters.id())
             .ok_or_else(|| format!("{} uses a codec this build cannot decode", source.display()))?;
 
-        let mut context = ffmpeg::codec::context::Context::from_parameters(parameters)
+        // First attempt: hardware attached when the preference allows it.
+        let mut context = ffmpeg::codec::context::Context::from_parameters(parameters.clone())
             .map_err(|e| format!("no decoder for {}: {e}", source.display()))?;
-        let mut hw = None;
-        {
-            // SAFETY: the context is not open yet, so `as_mut_ptr` gives a
-            // context whose fields may be written; `codec.as_ptr` is a static
-            // AVCodec owned by FFmpeg.
-            let ctx_ptr = unsafe { context.as_mut_ptr() };
-            let codec_ptr = unsafe { codec.as_ptr() };
-            if hw_accel.allows_hardware() {
-                // SAFETY: `ctx_ptr` is valid and unopened; `codec_ptr` matches
-                // the id the stream parameters asked for.
-                hw = unsafe { HwDecoder::attach(ctx_ptr, codec_ptr, hw_accel) };
-            }
-            // SAFETY: same context, still unopened: thread count and the
-            // frame+slice threading flags are plain fields.
-            unsafe {
-                (*ctx_ptr).thread_count = 4;
-                (*ctx_ptr).thread_type = ffi::FF_THREAD_FRAME | ffi::FF_THREAD_SLICE;
-            }
-            // SAFETY: opening a valid, unopened context with a matching codec
-            // and a null options dictionary is the documented call sequence.
-            let opened = unsafe { ffi::avcodec_open2(ctx_ptr, codec_ptr, ptr::null_mut()) };
-            if opened < 0 && hw.is_some() {
-                // Hardware refused: detach and reopen in software.
-                // SAFETY: the context failed to open, so it is still closed and
-                // safe to modify; the device reference we set is dropped here.
-                unsafe { HwDecoder::detach(ctx_ptr) };
-                hw = None;
-                // SAFETY: as above, with no device attached this time.
-                let retried = unsafe { ffi::avcodec_open2(ctx_ptr, codec_ptr, ptr::null_mut()) };
-                if retried < 0 {
-                    return Err(format!("could not open the decoder ({retried})"));
-                }
-            } else if opened < 0 {
-                return Err(format!("could not open the decoder ({opened})"));
-            }
-        }
+        // SAFETY: the context is not open yet, so its thread fields may be
+        // written; `codec` is a static AVCodec owned by FFmpeg.
+        let (ctx_ptr, codec_ptr) = unsafe {
+            let ctx_ptr = context.as_mut_ptr();
+            (*ctx_ptr).thread_count = 4;
+            (*ctx_ptr).thread_type = ffi::FF_THREAD_FRAME | ffi::FF_THREAD_SLICE;
+            (ctx_ptr, codec.as_ptr())
+        };
+        let mut hw = if hw_accel.allows_hardware() {
+            // SAFETY: `ctx_ptr` is a valid, unopened context and `codec_ptr`
+            // matches the id the stream parameters asked for. `attach` installs
+            // the device and the `get_format` callback, or returns `None`.
+            unsafe { HwDecoder::attach(ctx_ptr, codec_ptr, hw_accel) }
+        } else {
+            None
+        };
 
-        let mut decoder = Self {
+        let decoder = match context.decoder().video() {
+            Ok(decoder) => decoder,
+            Err(first_error) => {
+                if hw.is_none() {
+                    return Err(format!(
+                        "could not open the decoder for {}: {first_error}",
+                        source.display()
+                    ));
+                }
+                // The driver refused. The context was consumed by the failed
+                // open, so start again without a device.
+                hw = None;
+                let context =
+                    ffmpeg::codec::context::Context::from_parameters(parameters.clone())
+                        .map_err(|e| format!("no decoder for {}: {e}", source.display()))?;
+                // SAFETY: still unopened, so the thread fields are plain data.
+                unsafe {
+                    let ctx_ptr = context.as_mut_ptr();
+                    (*ctx_ptr).thread_count = 4;
+                    (*ctx_ptr).thread_type = ffi::FF_THREAD_FRAME | ffi::FF_THREAD_SLICE;
+                }
+                context.decoder().video().map_err(|e| {
+                    format!(
+                        "could not open the decoder for {} in software either: {e}",
+                        source.display()
+                    )
+                })?
+            }
+        };
+
+        let backend = hw.as_ref().map(|hw| hw.backend()).unwrap_or(HwBackend::Software);
+        let hw_format = hw.as_ref().map(|hw| hw.device_pix_fmt() as c_int);
+        let mut info = media.clone();
+        info.converted = false;
+        Ok(Self {
             input,
             stream_index,
-            context,
-            hw,
+            decoder,
             time_base,
-            // SAFETY: av_frame_alloc returns null or a new frame; the Drop
-            // above handles both.
-            raw: unsafe { ffi::av_frame_alloc() },
-            transferred: unsafe { ffi::av_frame_alloc() },
-            scaled: unsafe { ffi::av_frame_alloc() },
+            raw: ffmpeg::frame::Video::empty(),
+            transferred: ffmpeg::frame::Video::empty(),
+            scaled: None,
             sws: ptr::null_mut(),
-            info: media.clone(),
-            backend: HwBackend::Software,
+            sws_source: (0, 0, 0),
+            hw_format,
+            info,
+            backend,
             frame_us: media.frame_us(),
             rotation: media.rotation,
             rotation_probed: false,
-            eof: false,
-        };
-        if let Some(hw) = &decoder.hw {
-            decoder.backend = hw.backend();
-            decoder.info.converted = false;
-        }
-        if decoder.raw.is_null() || decoder.transferred.is_null() || decoder.scaled.is_null() {
-            return Err("could not allocate decode frames".to_owned());
-        }
-        Ok(decoder)
+        })
     }
 
     /// Jump to the last keyframe at or before `target_us` and flush.
@@ -767,15 +770,26 @@ impl Decoder {
         } else {
             target_us
         };
-        // `avformat_seek_file` forwards to `av_seek_frame` with the backward
-        // flag, i.e. it lands on the keyframe at or before the target.
-        self.input
-            .seek(ts, ..=ts)
-            .map_err(|e| format!("seek failed: {e}"))?;
-        // SAFETY: the context is open and owned by this decoder; flushing is
-        // the documented post-seek step.
-        unsafe { ffi::avcodec_flush_buffers(self.context.as_mut_ptr()) };
-        self.eof = false;
+        // SAFETY: the input context is open and owned here; seeking with
+        // `AVSEEK_FLAG_BACKWARD` is the documented way to land on the keyframe
+        // at or before the timestamp.
+        let ret = unsafe {
+            ffi::av_seek_frame(
+                self.input.as_mut_ptr(),
+                self.stream_index as c_int,
+                ts,
+                ffi::AVSEEK_FLAG_BACKWARD,
+            )
+        };
+        if ret < 0 {
+            // Fall back to the safe wrapper, which uses `avformat_seek_file`
+            // with the same intent (everything up to `ts` is acceptable).
+            self.input
+                .seek(ts, ..ts)
+                .map_err(|e| format!("seek failed: {e}"))?;
+        }
+        // Everything decoded before the seek is meaningless now.
+        self.decoder.flush();
         Ok(())
     }
 
@@ -784,15 +798,10 @@ impl Decoder {
         loop {
             match self.receive(pool) {
                 Ok(Some(frame)) => return Ok(Some(frame)),
-                Ok(None) => {}
-                Err(message) => return Err(message),
-            }
-            if self.eof {
-                return Ok(None);
-            }
-            match self.send_next_packet() {
-                Ok(true) => {}
-                Ok(false) => self.eof = true,
+                Ok(None) => match self.send_next_packet()? {
+                    true => {}
+                    false => return Ok(None),
+                },
                 Err(message) => return Err(message),
             }
         }
@@ -802,49 +811,49 @@ impl Decoder {
     fn send_next_packet(&mut self) -> Result<bool, String> {
         loop {
             let Some((stream, packet)) = self.input.packets().next() else {
-                // SAFETY: a null packet is how FFmpeg is told the stream ended.
-                let ret = unsafe { ffi::avcodec_send_packet(self.context.as_mut_ptr(), ptr::null()) };
-                let _ = ret;
+                // Telling the decoder the stream ended makes it drain.
+                let _ = self.decoder.send_eof();
                 return Ok(false);
             };
             if stream.index() != self.stream_index {
                 continue;
             }
-            // SAFETY: `packet` belongs to `stream`; the decoder context is open
-            // and FFmpeg copies what it needs during the call.
-            let ret =
-                unsafe { ffi::avcodec_send_packet(self.context.as_mut_ptr(), packet.as_ptr()) };
-            if ret >= 0 {
-                return Ok(true);
-            }
-            match ffmpeg::Error::from(ret) {
-                ffmpeg::Error::Other {
+            match self.decoder.send_packet(&packet) {
+                Ok(()) => return Ok(true),
+                Err(ffmpeg::Error::Other {
                     errno: ffmpeg::error::EAGAIN,
-                } => return Ok(true),
-                other => return Err(format!("decode error while sending a packet: {other}")),
+                }) => {
+                    // The decoder wants its output drained before it takes more
+                    // input. `next_frame` receives first, so this only happens
+                    // right after a seek; draining one frame and retrying keeps
+                    // the packet.
+                    let mut scratch = ffmpeg::frame::Video::empty();
+                    let _ = self.decoder.receive_frame(&mut scratch);
+                    let _ = self.decoder.send_packet(&packet);
+                    return Ok(true);
+                }
+                Err(ffmpeg::Error::Eof) => return Ok(false),
+                Err(error) => {
+                    return Err(format!("decode error while sending a packet: {error}"));
+                }
             }
         }
     }
 
     /// Pull one decoded frame out of the decoder, if it has one ready.
     fn receive(&mut self, pool: &Arc<BufferPool>) -> Result<Option<VideoFrame>, String> {
-        // SAFETY: `raw` is an allocated frame owned by this decoder.
-        unsafe { ffi::av_frame_unref(self.raw) };
-        // SAFETY: the context is open and `raw` is a valid receive target.
-        let ret = unsafe { ffi::avcodec_receive_frame(self.context.as_mut_ptr(), self.raw) };
-        if ret < 0 {
-            return match ffmpeg::Error::from(ret) {
-                ffmpeg::Error::Other {
-                    errno: ffmpeg::error::EAGAIN,
-                }
-                | ffmpeg::Error::Eof => Ok(None),
-                other => Err(format!("decode error while receiving a frame: {other}")),
-            };
+        match self.decoder.receive_frame(&mut self.raw) {
+            Ok(()) => {}
+            Err(ffmpeg::Error::Other {
+                errno: ffmpeg::error::EAGAIN,
+            })
+            | Err(ffmpeg::Error::Eof) => return Ok(None),
+            Err(error) => return Err(format!("decode error while receiving a frame: {error}")),
         }
         if !self.rotation_probed {
-            // SAFETY: `raw` was just filled by avcodec_receive_frame; the side
-            // data it may carry is owned by that frame.
-            self.rotation = unsafe { display_rotation(self.raw) };
+            // SAFETY: `raw` was just filled by the decoder; the display matrix,
+            // if there is one, is owned by that frame.
+            self.rotation = unsafe { display_rotation(self.raw.as_ptr()) };
             self.rotation_probed = true;
         }
         Ok(self.build_frame(pool))
@@ -853,22 +862,20 @@ impl Decoder {
     /// Turn the frame the decoder just produced into a [`VideoFrame`], doing the
     /// hardware transfer or the swscale conversion if this source needs it.
     fn build_frame(&mut self, pool: &Arc<BufferPool>) -> Option<VideoFrame> {
-        // SAFETY: `self.raw` was just filled by avcodec_receive_frame.
-        let raw_format = unsafe { (*self.raw).format };
-        let mut source = self.raw;
+        // SAFETY: `raw` was just filled by avcodec_receive_frame.
+        let raw = unsafe { self.raw.as_ptr() };
+        let raw_format = unsafe { (*raw).format };
+        let mut source = raw;
         let mut format;
         let mut converted = false;
 
-        let hw_format = self.hw.as_ref().map(|h| h.device_pix_fmt() as c_int);
-        if let Some(hw_format) = hw_format {
+        if let Some(hw_format) = self.hw_format {
             if raw_format == hw_format {
-                // SAFETY: `raw` holds device memory; `transferred` is an
-                // allocated, unreferenced frame the transfer fills in.
-                unsafe { ffi::av_frame_unref(self.transferred) };
-                // SAFETY: both frames are valid and owned here.
-                unsafe { HwDecoder::transfer(self.raw, self.transferred) }.ok()?;
-                source = self.transferred;
-                // SAFETY: the transfer just filled the frame.
+                // SAFETY: `raw` holds device memory and `transferred` is an
+                // allocated frame that the transfer fills in.
+                unsafe { HwDecoder::transfer(raw, self.transferred.as_mut_ptr()) }.ok()?;
+                // SAFETY: the transfer just filled `transferred`.
+                source = unsafe { self.transferred.as_ptr() };
                 let transferred_format = unsafe { (*source).format };
                 format = pixel_format_to_frame_format(transferred_format);
             } else {
@@ -879,12 +886,11 @@ impl Decoder {
         }
 
         if format.is_none() {
-            // SAFETY: `source` is a valid frame; `scaled` is an allocated frame
-            // whose buffers sws_scale writes into.
+            // SAFETY: `source` is a valid frame produced above.
             if !unsafe { self.scale_to_yuv420(source) } {
                 return None;
             }
-            source = self.scaled;
+            source = self.scaled.as_ref().map(|frame| unsafe { frame.as_ptr() })?;
             format = Some(FrameFormat::Yuv420p);
             converted = true;
         }
@@ -897,7 +903,7 @@ impl Decoder {
     ///
     /// # Safety
     /// `source` must be a valid frame produced by this decoder.
-    unsafe fn scale_to_yuv420(&mut self, source: *mut ffi::AVFrame) -> bool {
+    unsafe fn scale_to_yuv420(&mut self, source: *const ffi::AVFrame) -> bool {
         // SAFETY: the caller guarantees `source` is valid.
         let (width, height, format) = unsafe {
             (
@@ -906,10 +912,16 @@ impl Decoder {
                 (*source).format,
             )
         };
-        if self.sws.is_null() {
+        if self.sws.is_null() || self.sws_source != (width as u32, height as u32, format) {
+            // SAFETY: a previous context, if any, is ours to free.
+            unsafe {
+                if !self.sws.is_null() {
+                    ffi::sws_freeContext(self.sws);
+                }
+            }
             // SAFETY: all arguments describe the source and a YUV420P
-            // destination of the same size; SWS_BILINEAR is a supported flag
-            // and the three nulls are the default scaling callbacks.
+            // destination of the same size; SWS_BILINEAR is a supported flag and
+            // the three nulls are the default scaling callbacks.
             self.sws = unsafe {
                 ffi::sws_getContext(
                     width,
@@ -927,31 +939,30 @@ impl Decoder {
             if self.sws.is_null() {
                 return false;
             }
-            // SAFETY: `scaled` is an allocated frame; setting its shape and
-            // getting buffers is the documented allocation sequence.
-            unsafe {
-                (*self.scaled).format = ffi::AVPixelFormat::AV_PIX_FMT_YUV420P as c_int;
-                (*self.scaled).width = width;
-                (*self.scaled).height = height;
-                if ffi::av_frame_get_buffer(self.scaled, 0) < 0 {
-                    return false;
-                }
-            }
+            self.sws_source = (width as u32, height as u32, format);
+            self.scaled = Some(ffmpeg::frame::Video::new(
+                ffmpeg::format::Pixel::YUV420P,
+                width as u32,
+                height as u32,
+            ));
         }
-        // SAFETY: the destination was allocated for exactly this size/format,
-        // and the source is a valid frame of the size the context was made for.
+        let Some(scaled) = self.scaled.as_mut() else {
+            return false;
+        };
+        // SAFETY: the destination was allocated for exactly this size and
+        // format, and the source is a valid frame of the same dimensions.
         unsafe {
-            ffi::av_frame_make_writable(self.scaled);
-            let scaled = ffi::sws_scale(
+            let destination = scaled.as_mut_ptr();
+            let written = ffi::sws_scale(
                 self.sws,
                 (*source).data.as_ptr() as *const *const u8,
                 (*source).linesize.as_ptr(),
                 0,
                 height,
-                (*self.scaled).data.as_ptr(),
-                (*self.scaled).linesize.as_ptr(),
+                (*destination).data.as_ptr(),
+                (*destination).linesize.as_ptr(),
             );
-            scaled > 0
+            written > 0
         }
     }
 }
@@ -1151,7 +1162,7 @@ impl AudioWorker {
                         } else {
                             target_us
                         };
-                        let _ = input.seek(ts, ..=ts);
+                        let _ = input.seek(ts, ..ts);
                         decoder.flush();
                         fractional.reset();
                         // Tell the mixer to throw away the old position.
