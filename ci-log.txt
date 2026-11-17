@@ -2,228 +2,63 @@
     Updating crates.io index
      Locking 354 packages to highest Rust 1.95 compatible versions
     Checking reaction-player v0.1.0 (/__w/ReactPlayer-Rust/ReactPlayer-Rust)
-    Finished `dev` profile [optimized + debuginfo] target(s) in 1.88s
-check exit: 0
+error: unexpected closing delimiter: `)`
+    --> src/ui/screens/player.rs:1301:21
+     |
+1169 |         .show(ui, |ui| {
+     |                        - the nearest open delimiter
+...
+1299 |                             );
+     |                             - missing open `(` for this delimiter
+1300 |                         },
+1301 |                     )
+     |                     ^ unexpected closing delimiter
+
+error: could not compile `reaction-player` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `reaction-player` (lib test) due to 1 previous error
+check exit: 101
 
 ===== cargo test =====
    Compiling reaction-player v0.1.0 (/__w/ReactPlayer-Rust/ReactPlayer-Rust)
-    Finished `test` profile [optimized + debuginfo] target(s) in 16.30s
-     Running unittests src/lib.rs (target/debug/build/reaction-player/a7b560b0bcc6c8c0/out/reaction_player-a7b560b0bcc6c8c0)
+error: unexpected closing delimiter: `)`
+    --> src/ui/screens/player.rs:1301:21
+     |
+1169 |         .show(ui, |ui| {
+     |                        - the nearest open delimiter
+...
+1299 |                             );
+     |                             - missing open `(` for this delimiter
+1300 |                         },
+1301 |                     )
+     |                     ^ unexpected closing delimiter
 
-running 139 tests
-test engine::audio::tests::epoch_bumps_monotonically ... ok
-test app::tests::studio_delta_uses_b_minus_a ... ok
-test app::tests::slugs_are_file_name_safe ... ok
-test app::tests::slot_summary_reads_like_a_layout ... ok
-test engine::audio::tests::slots_start_inactive_and_unmuted ... ok
-test engine::audio::tests::volume_and_mute_are_clamped ... ok
-test engine::audio::tests::status_text_is_human ... ok
-test engine::audio_resample::tests::chunks_join_without_a_discontinuity ... ok
-test engine::audio_resample::tests::odd_input_lengths_are_ignored_safely ... ok
-test engine::audio_resample::tests::passthrough_is_bit_exact ... ok
-test engine::audio_resample::tests::a_faster_rate_plays_the_same_input_in_less_time ... ok
-test engine::audio_resample::tests::a_slower_rate_stretches_the_same_input ... ok
-test engine::audio_resample::tests::reset_forgets_the_tail ... ok
-test engine::audio_resample::tests::rate_is_clamped_to_the_nudge_band ... ok
-test engine::demo::tests::demo_session_offsets_the_reaction_by_the_flash ... ok
-test engine::demo::tests::ffmpeg_commands_carry_the_landmark ... ok
-test engine::hwaccel::tests::badges_match_the_spec ... ok
-test engine::demo::tests::paths_live_under_the_demo_directory ... ok
-test engine::demo::tests::missing_clips_are_not_ready ... ok
-test engine::hwaccel::tests::codes_round_trip ... ok
-test engine::hwaccel::tests::only_software_is_not_hardware ... ok
-test engine::hwaccel::tests::linux_prefers_vaapi_then_vulkan_then_vdpau ... ok
-test engine::hwaccel::tests::software_only_never_opens_a_device ... ok
-test engine::demo::tests::a_zero_length_file_is_not_a_clip ... ok
-ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
-ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
-ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
-ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
-ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
-ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
-ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
-ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
-ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5734:(snd_config_expand) test engine::runtime::tests::offsets_move_the_union_bounds ... [error.core] okEvaluate error: No such file or directory
-
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
-ALSA lib confmisc.c:855:(parse_card) test engine::runtime::tests::runtime_starts_paused_and_empty ... [error.core] okcannot find card '0'
-
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
-ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
-ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
-test engine::runtime::tests::seeking_clamps_into_the_union ... ok
-ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
-ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
-ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
-ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
-test engine::runtime::tests::stepping_moves_the_clock_by_whole_frames ... ALSA lib confmisc.c:422:(snd_func_concat) [error.core] okerror evaluating strings
-
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
-ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
-test engine::runtime::tests::tick_reports_the_union_and_does_not_play_past_the_end ... ok
-test engine::sync_clock::tests::audio_frames_advance_the_clock_exactly ... ok
-ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
-ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
-ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
-test engine::runtime::tests::unlinked_layers_keep_their_own_position ... ok
-test engine::sync_clock::tests::latency_is_subtracted_from_the_published_position ... ok
-test engine::sync_clock::tests::instant_driven_mode_advances_between_reads ... ok
-test engine::sync_clock::tests::interpolation_is_bounded_when_the_device_stalls ... ok
-test engine::sync_clock::tests::seeking_moves_the_clock_and_keeps_it_there ... ok
-test engine::track::tests::commands_are_copy_and_comparable ... ok
-test engine::track::tests::media_info_frame_duration ... ok
-test engine::track::tests::pixel_format_classification ... ok
-test engine::sync_clock::tests::pausing_freezes_the_position ... ok
-test engine::track::tests::shared_state_starts_empty ... ok
-test engine::track::tests::probe_rejects_a_missing_file ... ok
-test engine::video_frame::tests::bt709_matches_known_values ... ok
-test engine::video_frame::tests::chroma_planes_have_ceil_half_size ... ok
-test engine::video_frame::tests::crop_is_clamped_inside_the_frame ... ok
-test engine::video_frame::tests::history_budget_is_documented ... ok
-test engine::video_frame::tests::crop_uses_frame_coordinates_and_respects_stride ... ok
-test engine::video_frame::tests::nv12_and_yuv420p_agree ... ok
-test engine::video_frame::tests::pool_reuses_allocations ... ok
-test gpu::capture::tests::copy_path_reports_its_size_without_a_clipboard ... ok
-test engine::video_frame::tests::strides_are_not_repacked ... ok
-test gpu::capture::tests::scaling_never_enlarges ... ok
-test gpu::renderer::tests::compare_mode_flags ... ok
-test gpu::renderer::tests::rect_math_intersects ... ok
-test gpu::capture::tests::scaling_keeps_the_aspect_and_the_longest_edge ... ok
-test gpu::renderer::tests::uniform_encodes_mode_and_format ... ok
-test gpu::renderer::tests::uniform_matches_shader_layout ... ok
-test model::geom::tests::apply_aspect_fits_inside_the_rect ... ok
-test model::geom::tests::aspect_lock_holds_the_ratio_at_a_corner ... ok
-test model::geom::tests::clamping_keeps_layer_on_canvas ... ok
-test model::geom::tests::crop_is_bounded ... ok
-test model::geom::tests::crop_uv_and_pixels ... ok
-test model::geom::tests::hit_handle_misses_outside_tolerance ... ok
-test model::geom::tests::hit_testing_the_eight_handles ... ok
-test model::geom::tests::no_snap_when_far_away ... ok
-test model::geom::tests::normalized_round_trip ... ok
-test model::geom::tests::resize_never_goes_below_minimum ... ok
-test model::geom::tests::resizing_from_corners_keeps_the_opposite_corner ... ok
-test gpu::renderer::tests::shader_parses_and_validates ... ok
-test model::geom::tests::snapping_to_canvas_edges_and_centre ... ok
-test model::geom::tests::snapping_to_other_layers ... ok
-test model::presets::tests::applying_a_preset_keeps_offsets_and_names ... ok
-test model::presets::tests::builtins_are_all_two_to_four_slots ... ok
-test model::presets::tests::every_layout_covers_the_requested_count ... ok
-test model::presets::tests::pip_puts_the_source_on_top_or_underneath ... ok
-test model::presets::tests::grid_shapes ... ok
-test model::presets::tests::preset_from_session_records_paint_order ... ok
-test model::presets::tests::preset_round_trip_through_json ... ok
-test model::presets::tests::side_by_side_halves_the_canvas ... ok
-test model::session::tests::bring_forward_is_a_no_op_at_the_top ... ok
-test model::session::tests::canvas_aspect_fits_the_available_area ... ok
-test model::session::tests::duplicate_regenerates_ids_and_keeps_the_master ... ok
-test model::session::tests::lensed_audio_goes_to_the_topmost_active_layer ... ok
-test model::session::tests::hit_test_skips_hidden_and_locked_layers ... ok
-test model::session::tests::master_falls_back_to_the_first_layer_with_audio ... ok
-test model::session::tests::offsets_move_the_layer_on_the_union_timeline ... ok
-test model::session::tests::paint_order_is_ascending_and_hit_test_descending ... ok
-test model::session::tests::reordering_normalizes_to_a_dense_range ... ok
-test model::settings::tests::defaults_match_the_spec ... ok
-test model::settings::tests::hw_accel_pref_gates_hardware ... ok
-test model::settings::tests::missing_fields_get_defaults ... ok
-test model::settings::tests::json_round_trip_keeps_the_version ... ok
-test model::settings::tests::sanitize_clamps_hand_edited_values ... ok
-test model::store::tests::custom_presets_are_persisted_by_name ... ok
-test model::store::tests::clear_all_removes_data_but_keeps_the_root ... ok
-test model::store::tests::export_and_import_round_trip ... ok
-test model::store::tests::missing_preferences_are_defaults_not_errors ... ok
-test model::store::tests::importing_a_file_without_an_id_mints_one ... ok
-test model::store::tests::newer_files_are_refused_with_a_clear_error ... ok
-test model::store::tests::session_round_trip_keeps_every_field ... ok
-test model::store::tests::session_survives_a_layout_round_trip ... ok
-test model::store::tests::settings_round_trip_through_disk ... ok
-test model::store::tests::thumbnails_are_written_as_png ... ok
-test model::timeline::tests::alignment_delta_uses_the_target_convention ... ok
-test model::timeline::tests::drift_thresholds_are_exact ... ok
-test model::timeline::tests::nudge_rate_points_the_right_way_and_clamps ... ok
-test model::timeline::tests::scrubber_fraction_is_relative_to_union_start ... ok
-test model::timeline::tests::span_holds_first_and_last_frames ... ok
-test model::timeline::tests::stepping_stays_inside_the_footage ... ok
-test model::timeline::tests::target_is_clamped_per_layer ... ok
-test model::timeline::tests::union_covers_every_layer ... ok
-test model::timeline::tests::union_of_nothing_is_empty ... ok
-test ui::screens::player::tests::aspect_helper_snaps_to_the_target_ratio ... ok
-test ui::screens::player::tests::aspect_locked_resize_keeps_the_ratio ... ok
-test ui::screens::player::tests::contain_letterboxes_a_wide_source_into_a_square_box ... ok
-test ui::screens::player::tests::contain_pillarboxes_a_tall_source ... ok
-test ui::screens::player::tests::cover_fills_the_box_and_crops_the_long_axis ... ok
-test ui::screens::player::tests::cover_respects_an_existing_crop ... ok
-test ui::screens::player::tests::layer_keys_are_stable_and_distinct ... ok
-test ui::screens::player::tests::normalized_points_round_trip ... ok
-test ui::screens::player::tests::reordering_densifies_z ... ok
-test ui::screens::sessions::tests::relative_times_read_naturally ... ok
-test ui::shortcuts::tests::command_and_alt_are_left_to_egui ... ok
-test ui::shortcuts::tests::every_action_has_keys_and_a_description ... ok
-test ui::shortcuts::tests::every_documented_binding_maps ... ok
-test ui::shortcuts::tests::question_mark_arrives_as_text ... ok
-test ui::shortcuts::tests::unbound_keys_do_nothing ... ok
-test ui::theme::tests::accent_is_the_only_accent ... ok
-test ui::theme::tests::theme_is_black_and_square ... ok
-test ui::toast::tests::at_most_three_stay_up ... ok
-test ui::toast::tests::levels_have_distinct_colours ... ok
-test ui::toast::tests::messages_stack_but_do_not_repeat ... ok
-test ui::toast::tests::older_messages_expire ... ok
-test ui::widgets::tests::file_names_fall_back_to_the_whole_path ... ok
-test ui::widgets::tests::offsets_are_signed ... ok
-test ui::widgets::tests::row_colours_follow_state ... ok
-test ui::widgets::tests::timecode_formats_milli_seconds ... ok
-test model::store::tests::session_list_is_sorted_newest_first ... ok
-test engine::sync_clock::tests::switching_timebase_does_not_jump ... ok
-test engine::runtime::tests::missing_media_shows_up_as_an_error_not_a_panic ... ok
-
-test result: ok. 139 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
-
-     Running unittests src/main.rs (target/debug/build/reaction-player/0561b841dea84d3a/out/reaction_player-0561b841dea84d3a)
-
-running 0 tests
-
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-
-test exit: 0
+error: could not compile `reaction-player` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `reaction-player` (lib test) due to 1 previous error
+test exit: 101
 
 ===== warning count =====
-0
+1
 
 ===== cargo clippy --all-targets -- -D warnings =====
     Checking reaction-player v0.1.0 (/__w/ReactPlayer-Rust/ReactPlayer-Rust)
-    Finished `dev` profile [optimized + debuginfo] target(s) in 1.20s
-clippy exit: 0
+error: unexpected closing delimiter: `)`
+    --> src/ui/screens/player.rs:1301:21
+     |
+1169 |         .show(ui, |ui| {
+     |                        - the nearest open delimiter
+...
+1299 |                             );
+     |                             - missing open `(` for this delimiter
+1300 |                         },
+1301 |                     )
+     |                     ^ unexpected closing delimiter
+
+error: could not compile `reaction-player` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `reaction-player` (lib test) due to 1 previous error
+clippy exit: 101
 
 ===== clippy warning count =====
-0
+1
