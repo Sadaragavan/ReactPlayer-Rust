@@ -64,19 +64,20 @@ jobs:
         if: always()
         env:
           BRANCH: ${{ github.ref_name }}
+          TOKEN: ${{ github.token }}
         run: |
-          set -x
+          set -eux
           # Upload through the Contents API: it commits server-side, so it cannot
           # lose a race with a push that landed while the job was running.
           CONTENT=$(base64 -w0 ci-log.txt)
-          SHA=$(curl -sf -H "Authorization: Bearer $GITHUB_TOKEN" \
+          SHA=$(curl -sf -H "Authorization: Bearer $TOKEN" \
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/ci-log.txt?ref=$BRANCH" \
-              | tr ',' '\n' | sed -n 's/.*"sha": *"\([a-f0-9]\{40\}\)".*/\1/p' | head -1)
+              | tr ',' '\n' | sed -n 's/.*"sha": *"\([a-f0-9]\{40\}\)".*/\1/p' | head -1 || true)
           if [ -n "$SHA" ]; then SHA_FIELD=",\"sha\":\"$SHA\""; else SHA_FIELD=""; fi
           printf '{"message":"ci: run %s log","content":"%s","branch":"%s"%s}' \
               "$GITHUB_RUN_ID" "$CONTENT" "$BRANCH" "$SHA_FIELD" > /tmp/payload.json
-          curl -s -o /tmp/put.out -w 'put status: %{http_code}\n' -X PUT \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
+          curl -sf -o /tmp/put.out -w 'put status: %{http_code}\n' -X PUT \
+              -H "Authorization: Bearer $TOKEN" \
               -H "Accept: application/vnd.github+json" \
               -H "Content-Type: application/json" \
               --data-binary @/tmp/payload.json \
