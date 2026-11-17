@@ -160,9 +160,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                  with the reaction's flash 1500 ms after the source's.",
                             )
                             .on_disabled_hover_text(
-                                "The demo generates its footage with ffmpeg, which is not on \
-                                 PATH. Install it (\"sudo pacman -S ffmpeg\" on Arch), then \
-                                 reopen Reaction Player. Everything else works without it.",
+                                "The demo writes its footage with the ffmpeg command, which is \
+                                 not on the PATH. Install FFmpeg so that \"ffmpeg -version\" runs \
+                                 in a terminal, then reopen Reaction Player. Your own video \
+                                 files play without it.",
                             );
                         let _ = demo;
                         if demo.clicked() {

@@ -64,6 +64,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     widgets::kv(ui, "FFmpeg (libavcodec)", &ffmpeg_version());
                     widgets::kv(
                         ui,
+                        "ffmpeg command",
+                        if app.ffmpeg_ready {
+                            "found on the PATH"
+                        } else {
+                            "not found on the PATH"
+                        },
+                    );
+                    if !app.ffmpeg_ready {
+                        ui.label(
+                            RichText::new(
+                                "The demo writes its footage with that command. Your own video \
+                                 files play without it; only the demo needs it.",
+                            )
+                            .color(theme::DANGER)
+                            .size(11.0),
+                        );
+                    }
+                    widgets::kv(
+                        ui,
                         "Backends tried",
                         "VAAPI, Vulkan, VDPAU (Linux) · D3D11VA, DXVA2 (Windows) · VideoToolbox (macOS)",
                     );

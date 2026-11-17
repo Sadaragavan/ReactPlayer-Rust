@@ -1482,7 +1482,7 @@ impl App {
             painter.text(
                 at + egui::vec2(0.0, 22.0),
                 egui::Align2::CENTER_CENTER,
-                "Install it, or move it next to the app, then drop the file again",
+                "Install FFmpeg so that \"ffmpeg -version\" runs, then drop the file again",
                 egui::FontId::proportional(12.0),
                 theme::MUTED,
             );

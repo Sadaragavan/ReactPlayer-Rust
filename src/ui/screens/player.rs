@@ -842,6 +842,11 @@ fn transport(app: &mut App, ui: &mut egui::Ui, theater: bool) {
                             .stroke(egui::Stroke::new(1.0, theme::ACCENT))
                             .corner_radius(theme::RADIUS),
                     )
+                    .on_hover_text(if playing {
+                        "Pause (Space)"
+                    } else {
+                        "Play (Space)"
+                    })
                     .clicked()
                 {
                     app.toggle_play();
@@ -902,6 +907,21 @@ fn transport(app: &mut App, ui: &mut egui::Ui, theater: bool) {
                         let fullscreen =
                             ui.ctx().input(|input| input.viewport().fullscreen.unwrap_or(false));
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
+                    }
+                    // The shortcut sheet is keyboard-only otherwise, which
+                    // means nobody who has not read the README can find it.
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("?").color(theme::MUTED).size(12.0))
+                                .fill(theme::BG)
+                                .stroke(theme::hairline(theme::LINE))
+                                .corner_radius(theme::RADIUS)
+                                .min_size(egui::vec2(26.0, 24.0)),
+                        )
+                        .on_hover_text("Keyboard shortcuts (?)")
+                        .clicked()
+                    {
+                        app.sheet = true;
                     }
                     let theater_label = if app.theater { "Exit theater" } else { "Theater" };
                     if ui
