@@ -50,6 +50,10 @@ use super::video_frame::{PixelFormat, PlaneBuf, PlanePool, VideoFrame};
 /// `StreamIter` is a plain `Iterator`, not an indexed collection, so it has no
 /// `get`. `find` walks the streams once and matches on the `AVStream` index,
 /// which is the number FFmpeg puts on packets and in `best()`.
+///
+/// Takes `&Input`: `streams()` is defined on the deref target `Context`, so a
+/// `&Input`, a `&mut Input` *and* an owned `Input` all work as arguments
+/// (`&mut`/`&` coerce, and an owned binding just needs `&` at the call site).
 fn stream_at(
     input: &ffmpeg::format::context::Input,
     index: usize,
@@ -678,7 +682,7 @@ impl Worker {
                 Ok((dec, backend)) => (dec, backend, false),
                 Err(_) => {
                     let mut d = ffmpeg::codec::context::Context::from_parameters(
-                        stream_at(input, video_index).unwrap().parameters(),
+                        stream_at(&input, video_index).unwrap().parameters(),
                     )
                     .map_err(|e| TrackError::Open(e.to_string()))?
                     .decoder()
@@ -782,8 +786,8 @@ impl Worker {
             let supported = {
                 let mut probe_ctx = ffmpeg::codec::context::Context::from_parameters(
                     stream_at(input, self.video_index)
-                    .unwrap()
-                    .parameters(),
+                        .unwrap()
+                        .parameters(),
                 )
                 .map_err(|e| HwError::Setup(e.to_string()))?;
                 // SAFETY: `probe_ctx` is a live codec context whose `codec`
