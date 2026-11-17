@@ -2,27 +2,13 @@
     Updating crates.io index
      Locking 354 packages to highest Rust 1.95 compatible versions
     Checking reaction-player v0.1.0 (/__w/ReactPlayer-Rust/ReactPlayer-Rust)
-warning: unused import: `Producer`
-  --> src/engine/audio.rs:18:43
-   |
-18 | use ringbuf::traits::{Consumer, Observer, Producer, Split};
-   |                                           ^^^^^^^^
-   |
-   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
 warning: unused import: `Sender`
   --> src/engine/track.rs:20:33
    |
 20 | use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, TrySendError, sync_channel};
    |                                 ^^^^^^
-
-warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
-    --> src/app.rs:1374:23
-     |
-1374 |             egui::Id::new("drop-overlay"),
-     |                       ^^^
-     |
-     = note: `#[warn(deprecated)]` on by default
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
 
 error[E0308]: mismatched types
      --> src/engine/track.rs:928:21
@@ -43,12 +29,6 @@ help: call `Into::into` on this expression to convert `ffmpeg_next::format::Pixe
   928 |                     format.into(),
       |                           +++++++
 
-warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
-    --> src/ui/screens/player.rs:1020:43
-     |
-1020 | ...                   egui::Id::new(("layer-drag", id_for_drag.clone())),
-     |                                 ^^^
-
 error[E0308]: mismatched types
    --> src/ui/screens/sessions.rs:94:78
     |
@@ -84,30 +64,6 @@ help: consider borrowing here
     |
 171 |                                                 app.open_session(session, &ctx);
     |                                                                           +
-
-warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
-   --> src/ui/screens/sessions.rs:235:91
-    |
-235 |     if let Some(texture) = ctx.data(|data| data.get_temp::<egui::TextureHandle>(egui::Id::new(&key)))
-    |                                                                                           ^^^
-
-warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
-   --> src/ui/screens/sessions.rs:243:52
-    |
-243 |     ctx.data_mut(|data| data.insert_temp(egui::Id::new(&key), texture.clone()));
-    |                                                    ^^^
-
-warning: use of deprecated field `eframe::egui::Visuals::clip_rect_margin`: This is now unused and has no effect
-   --> src/ui/theme.rs:139:5
-    |
-139 |     v.clip_rect_margin = 0.0;
-    |     ^^^^^^^^^^^^^^^^^^
-
-warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
-   --> src/ui/toast.rs:104:35
-    |
-104 |         egui::Area::new(egui::Id::new("toasts"))
-    |                                   ^^^
 
 warning: variable does not need to be mutable
    --> src/engine/audio.rs:195:13
@@ -162,50 +118,22 @@ warning: unused variable: `ctx`
 
 Some errors have detailed explanations: E0308, E0596.
 For more information about an error, try `rustc --explain E0308`.
-warning: `reaction-player` (lib) generated 10 warnings
-error: could not compile `reaction-player` (lib) due to 6 previous errors; 10 warnings emitted
+warning: `reaction-player` (lib) generated 3 warnings (1 duplicate)
+error: could not compile `reaction-player` (lib) due to 6 previous errors; 3 warnings emitted
 warning: build failed, waiting for other jobs to finish...
-warning: unused variable: `root`
-   --> src/model/store.rs:569:21
-    |
-569 |         let (store, root) = store("layout");
-    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_root`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `ctx`
-  --> src/ui/screens/studio.rs:41:9
-   |
-41 |     let ctx = ui.ctx().clone();
-   |         ^^^ help: if this is intentional, prefix it with an underscore: `_ctx`
-
-warning: `reaction-player` (lib test) generated 11 warnings (9 duplicates)
-error: could not compile `reaction-player` (lib test) due to 6 previous errors; 11 warnings emitted
+warning: `reaction-player` (lib test) generated 3 warnings (2 duplicates)
+error: could not compile `reaction-player` (lib test) due to 6 previous errors; 3 warnings emitted
 check exit: 101
 
 ===== cargo test =====
    Compiling reaction-player v0.1.0 (/__w/ReactPlayer-Rust/ReactPlayer-Rust)
-warning: unused import: `Producer`
-  --> src/engine/audio.rs:18:43
-   |
-18 | use ringbuf::traits::{Consumer, Observer, Producer, Split};
-   |                                           ^^^^^^^^
-   |
-   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
 warning: unused import: `Sender`
   --> src/engine/track.rs:20:33
    |
 20 | use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, TrySendError, sync_channel};
    |                                 ^^^^^^
-
-warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
-    --> src/app.rs:1374:23
-     |
-1374 |             egui::Id::new("drop-overlay"),
-     |                       ^^^
-     |
-     = note: `#[warn(deprecated)]` on by default
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
 
 error[E0308]: mismatched types
      --> src/engine/track.rs:928:21
@@ -226,12 +154,6 @@ help: call `Into::into` on this expression to convert `ffmpeg_next::format::Pixe
   928 |                     format.into(),
       |                           +++++++
 
-warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
-    --> src/ui/screens/player.rs:1020:43
-     |
-1020 | ...                   egui::Id::new(("layer-drag", id_for_drag.clone())),
-     |                                 ^^^
-
 error[E0308]: mismatched types
    --> src/ui/screens/sessions.rs:94:78
     |
@@ -267,30 +189,6 @@ help: consider borrowing here
     |
 171 |                                                 app.open_session(session, &ctx);
     |                                                                           +
-
-warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
-   --> src/ui/screens/sessions.rs:235:91
-    |
-235 |     if let Some(texture) = ctx.data(|data| data.get_temp::<egui::TextureHandle>(egui::Id::new(&key)))
-    |                                                                                           ^^^
-
-warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
-   --> src/ui/screens/sessions.rs:243:52
-    |
-243 |     ctx.data_mut(|data| data.insert_temp(egui::Id::new(&key), texture.clone()));
-    |                                                    ^^^
-
-warning: use of deprecated field `eframe::egui::Visuals::clip_rect_margin`: This is now unused and has no effect
-   --> src/ui/theme.rs:139:5
-    |
-139 |     v.clip_rect_margin = 0.0;
-    |     ^^^^^^^^^^^^^^^^^^
-
-warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
-   --> src/ui/toast.rs:104:35
-    |
-104 |         egui::Area::new(egui::Id::new("toasts"))
-    |                                   ^^^
 
 warning: variable does not need to be mutable
    --> src/engine/audio.rs:195:13
@@ -345,26 +243,12 @@ warning: unused variable: `ctx`
 
 Some errors have detailed explanations: E0308, E0596.
 For more information about an error, try `rustc --explain E0308`.
-warning: `reaction-player` (lib) generated 10 warnings
-error: could not compile `reaction-player` (lib) due to 6 previous errors; 10 warnings emitted
+warning: `reaction-player` (lib) generated 3 warnings
+error: could not compile `reaction-player` (lib) due to 6 previous errors; 3 warnings emitted
 warning: build failed, waiting for other jobs to finish...
-warning: unused variable: `root`
-   --> src/model/store.rs:569:21
-    |
-569 |         let (store, root) = store("layout");
-    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_root`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `ctx`
-  --> src/ui/screens/studio.rs:41:9
-   |
-41 |     let ctx = ui.ctx().clone();
-   |         ^^^ help: if this is intentional, prefix it with an underscore: `_ctx`
-
-warning: `reaction-player` (lib test) generated 11 warnings (9 duplicates)
-error: could not compile `reaction-player` (lib test) due to 6 previous errors; 11 warnings emitted
+warning: `reaction-player` (lib test) generated 3 warnings (3 duplicates)
+error: could not compile `reaction-player` (lib test) due to 6 previous errors; 3 warnings emitted
 test exit: 101
 
 ===== warning count =====
-16
+8
