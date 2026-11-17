@@ -25,6 +25,7 @@ use crate::model::session::{now_ms, CanvasAspect, FitMode, Layer, MediaSource, R
 use crate::model::settings::Settings;
 use crate::model::store::{SessionSummary, Store};
 use crate::ui::screens;
+use crate::ui::screens::player::to_norm;
 use crate::ui::shortcuts::{self, Action};
 use crate::ui::theme;
 use crate::ui::toast::Toasts;
@@ -158,6 +159,9 @@ pub struct CanvasState {
     pub scrubbing: bool,
     pub context_layer: Option<String>,
     pub lock_layout: bool,
+    /// Where the canvas was drawn last frame, in screen points. A dropped file
+    /// uses it to land under the cursor instead of in the middle.
+    pub last_rect: Option<egui::Rect>,
 }
 
 /// The application.
@@ -505,8 +509,8 @@ impl App {
         session.normalize_z();
         let added = files.len();
         self.sync_engine();
-        self.toasts
-            .success(format!("Added {added} layer(s). Opening them now."));
+        let noun = if added == 1 { "layer" } else { "layers" };
+        self.toasts.success(format!("Added {added} {noun}."));
     }
 
     /// Open the demo: generate the clips if needed, then the session.
@@ -1020,12 +1024,13 @@ impl App {
             return;
         }
         if self.session.is_some() && matches!(self.screen, Screen::Player | Screen::Studio) {
-            let point = ctx.input(|input| input.pointer.latest_pos()).map(|pos| {
-                // Rough placement: the drop point in canvas units is not known
-                // here, so new layers land as insets the user can move.
-                let _ = pos;
-                Point { x: 0.5, y: 0.5 }
-            });
+            // Land under the cursor when the drop was over the canvas; a drop
+            // over the side panels has no canvas position, so the layer gets the
+            // default inset instead.
+            let point = ctx
+                .input(|input| input.pointer.latest_pos())
+                .and_then(|pos| self.canvas.last_rect.map(|rect| to_norm(rect, pos)))
+                .filter(|point| (0.0..=1.0).contains(&point.x) && (0.0..=1.0).contains(&point.y));
             self.add_layers(videos, point);
         } else {
             self.new_session_with_files(videos);
@@ -1430,13 +1435,35 @@ impl App {
             egui::Stroke::new(1.0, theme::ACCENT),
             egui::StrokeKind::Inside,
         );
+        let in_session = self.session.is_some()
+            && matches!(self.screen, Screen::Player | Screen::Studio);
+        let (title, colour) = if !self.ffmpeg_ready {
+            ("FFmpeg is not on the PATH", theme::DANGER)
+        } else if in_session {
+            ("Drop to add a layer", theme::ACCENT)
+        } else {
+            ("Drop to start a session", theme::ACCENT)
+        };
+        let mut at = rect.center();
+        if !self.ffmpeg_ready {
+            at.y -= 12.0;
+        }
         painter.text(
-            rect.center(),
+            at,
             egui::Align2::CENTER_CENTER,
-            "Drop to add a layer",
+            title,
             egui::FontId::proportional(16.0),
-            theme::ACCENT,
+            colour,
         );
+        if !self.ffmpeg_ready {
+            painter.text(
+                at + egui::vec2(0.0, 22.0),
+                egui::Align2::CENTER_CENTER,
+                "Install it, or move it next to the app, then drop the file again",
+                egui::FontId::proportional(12.0),
+                theme::MUTED,
+            );
+        }
     }
 }
 

@@ -271,6 +271,7 @@ fn canvas(app: &mut App, ui: &mut egui::Ui) {
                 egui::vec2(size.w.max(32.0), size.h.max(18.0)),
             );
             let response = ui.allocate_rect(rect, Sense::click_and_drag());
+            app.canvas.last_rect = Some(rect);
             let ppp = ui.ctx().pixels_per_point();
 
             // Everything below works in points and converts once, at the end.
