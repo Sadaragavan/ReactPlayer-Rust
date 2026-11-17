@@ -62,20 +62,22 @@ jobs:
               | grep -c "^warning" || true
           } > ci-log.txt 2>&1
           tail -40 ci-log.txt || true
-      # TEMPORARY: the authoring sandbox has no toolchain, so the runner
-      # formats the tree and publishes the result as a patch. Removed once the
-      # tree is rustfmt-clean.
+      # TEMPORARY: the authoring sandbox has no toolchain, so the runner runs
+      # rustfmt and publishes the result as a patch. Removed once the tree is
+      # rustfmt-clean.
       - name: fmt patch
         if: always()
         run: |
           set +e
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          cargo fmt --all > /tmp/fmt.out 2>&1
-          echo "fmt exit: $?"
+          rustfmt --version > /tmp/fmt.out 2>&1
+          find src -name '*.rs' -print0 \
+            | xargs -0 rustfmt --edition 2024 >> /tmp/fmt.out 2>&1
+          echo "with-config exit: $?" >> /tmp/fmt.out
           {
             echo
             echo "===== fmt output ====="
-            tail -10 /tmp/fmt.out
+            tail -15 /tmp/fmt.out
             echo
             echo "===== fix patch ====="
             git diff
