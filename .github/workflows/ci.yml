@@ -52,6 +52,14 @@ jobs:
             echo
             echo "===== warning count ====="
             cargo check --all-targets --message-format short 2>&1 | grep -c warning
+            echo
+            echo "===== cargo clippy --all-targets -- -D warnings ====="
+            cargo clippy --all-targets --all-features -- -D warnings 2>&1
+            echo "clippy exit: $?"
+            echo
+            echo "===== clippy warning count ====="
+            cargo clippy --all-targets --all-features --message-format short 2>&1 \
+              | grep -c "^warning" || true
           } > ci-log.txt 2>&1
           tail -40 ci-log.txt || true
       - name: upload log
@@ -60,6 +68,22 @@ jobs:
         with:
           name: ci-log
           path: ci-log.txt
+      # The log steps above deliberately do not fail the job, so the whole log is
+      # collected even when the build breaks. This is what makes the run red.
+      - name: gate
+        if: always()
+        run: |
+          if grep -qE '^(check|test|clippy) exit: [1-9]' ci-log.txt; then
+            echo "cargo failed, see ci-log.txt"
+            exit 1
+          fi
+          if [ "$(grep -oE 'clippy warning count =====' ci-log.txt | wc -l)" -gt 0 ]; then
+            count=$(awk '/clippy warning count/{getline; getline; print; exit}' ci-log.txt)
+            if [ "${count:-0}" -gt 0 ]; then
+              echo "clippy emitted $count warnings"
+              exit 1
+            fi
+          fi
       - name: publish log
         if: always()
         env:
