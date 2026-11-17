@@ -156,7 +156,8 @@ impl AudioEngine {
             };
         };
         let device_name = device
-            .name()
+            .description()
+            .map(|description| description.name().to_owned())
             .unwrap_or_else(|_| "default output".to_owned());
 
         let supported = match device.default_output_config() {
@@ -176,7 +177,7 @@ impl AudioEngine {
 
         let sample_format = supported.sample_format();
         let config: cpal::StreamConfig = supported.clone().into();
-        let rate = config.sample_rate.0;
+        let rate = config.sample_rate;
         let channels = config.channels;
         clock.set_sample_rate(rate);
 
@@ -185,25 +186,28 @@ impl AudioEngine {
             slots: slots.clone(),
             clock: clock.clone(),
             master_volume: master_volume.clone(),
-            channels,
+            channels: usize::from(channels),
             epochs: vec![0; MAX_TRACKS],
             scratch: vec![0.0; RING_SAMPLES.min(8_192)],
             mixed: Vec::new(),
         };
 
         let mut mixer = mixer;
-        let build = |mixer: Mixer| -> Result<cpal::Stream, cpal::BuildStreamError> {
-            let error_callback = |err| eprintln!("reaction-player: audio stream error: {err}");
+        // `move`: the config and the error callback belong to the stream.
+        let build = move |mixer: Mixer| -> Result<cpal::Stream, cpal::Error> {
+            let error_callback = |err: cpal::Error| {
+                eprintln!("reaction-player: audio stream error: {err}");
+            };
             match sample_format {
                 SampleFormat::F32 => device.build_output_stream(
-                    &config,
+                    config,
                     move |data: &mut [f32], info| mixer.render(data, info),
                     error_callback,
                     None,
                 ),
                 SampleFormat::I16 => {
                     device.build_output_stream(
-                        &config,
+                        config,
                         move |data: &mut [i16], info| mixer.render_converted(data, info),
                         error_callback,
                         None,
@@ -211,14 +215,15 @@ impl AudioEngine {
                 }
                 SampleFormat::U16 => {
                     device.build_output_stream(
-                        &config,
+                        config,
                         move |data: &mut [u16], info| mixer.render_converted(data, info),
                         error_callback,
                         None,
                     )
                 }
                 other => {
-                    return Err(cpal::BuildStreamError::StreamConfigNotSupported);
+                    let _ = other;
+                    return Err(cpal::Error::new(cpal::ErrorKind::UnsupportedConfig));
                 }
             }
         };

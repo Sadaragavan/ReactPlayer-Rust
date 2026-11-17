@@ -304,7 +304,7 @@ impl TrackShared {
 /// A running track.
 pub struct Track {
     pub shared: Arc<TrackShared>,
-    senders: Vec<Sender<Command>>,
+    senders: Vec<SyncSender<Command>>,
     video_thread: Option<JoinHandle<()>>,
     audio_thread: Option<JoinHandle<()>>,
     frames: Option<Receiver<(u64, Arc<VideoFrame>)>>,
@@ -534,12 +534,16 @@ impl VideoWorker {
                 self.shared.set_paused(true);
             }
             Command::Seek { target_us } => {
-                if let Some(decoder) = self.decoder.as_mut() {
+                // The decoder is taken out so `seek_to` can borrow the rest of
+                // the worker while it moves the file position.
+                if let Some(mut decoder) = self.decoder.take() {
                     // The epoch moves first so nothing from the old position can
                     // reach the screen.
                     self.shared.epoch.fetch_add(1, Ordering::AcqRel);
                     self.shared.clear_history();
-                    if let Err(message) = self.seek_to(decoder, target_us) {
+                    let result = self.seek_to(&mut decoder, target_us);
+                    self.decoder = Some(decoder);
+                    if let Err(message) = result {
                         self.shared.set_error(message);
                     }
                 }
@@ -552,9 +556,11 @@ impl VideoWorker {
                     .unwrap_or(33_333);
                 let from = self.shared.last_presented_us();
                 let target = (from + delta.saturating_mul(frame_us)).max(0);
-                if let Some(decoder) = self.decoder.as_mut() {
+                if let Some(mut decoder) = self.decoder.take() {
                     self.shared.epoch.fetch_add(1, Ordering::AcqRel);
-                    if let Err(message) = self.seek_to(decoder, target) {
+                    let result = self.seek_to(&mut decoder, target);
+                    self.decoder = Some(decoder);
+                    if let Err(message) = result {
                         self.shared.set_error(message);
                     }
                 }
@@ -643,7 +649,7 @@ struct Decoder {
     /// Where swscale puts a source format the compositor cannot sample.
     scaled: Option<ffmpeg::frame::Video>,
     sws: *mut ffi::SwsContext,
-    sws_source: (u32, u32, c_int),
+    sws_source: (u32, u32, ffmpeg::format::Pixel),
     /// The device pixel format, when hardware is in use.
     hw_format: Option<c_int>,
     info: MediaInfo,
@@ -717,7 +723,7 @@ impl Decoder {
                 // The driver refused. The context was consumed by the failed
                 // open, so start again without a device.
                 hw = None;
-                let context =
+                let mut context =
                     ffmpeg::codec::context::Context::from_parameters(parameters.clone())
                         .map_err(|e| format!("no decoder for {}: {e}", source.display()))?;
                 // SAFETY: still unopened, so the thread fields are plain data.
@@ -748,7 +754,7 @@ impl Decoder {
             transferred: ffmpeg::frame::Video::empty(),
             scaled: None,
             sws: ptr::null_mut(),
-            sws_source: (0, 0, 0),
+            sws_source: (0, 0, ffmpeg::format::Pixel::None),
             hw_format,
             info,
             backend,
@@ -849,7 +855,7 @@ impl Decoder {
         if !self.rotation_probed {
             // SAFETY: `raw` was just filled by the decoder; the display matrix,
             // if there is one, is owned by that frame.
-            self.rotation = unsafe { display_rotation(self.raw.as_ptr()) };
+            self.rotation = display_rotation(&self.raw);
             self.rotation_probed = true;
         }
         Ok(self.build_frame(pool))
@@ -901,13 +907,10 @@ impl Decoder {
     /// `source` must be a valid frame produced by this decoder.
     unsafe fn scale_to_yuv420(&mut self, source: *const ffi::AVFrame) -> bool {
         // SAFETY: the caller guarantees `source` is valid.
-        let (width, height, format) = unsafe {
-            (
-                (*source).width.max(1),
-                (*source).height.max(1),
-                (*source).format,
-            )
-        };
+        let (width, height) = unsafe { ((*source).width.max(1), (*source).height.max(1)) };
+        // Every frame this decoder hands back carries the decoder's pixel
+        // format, which is the one swscale has to be configured for.
+        let format = self.decoder.format();
         if self.sws.is_null() || self.sws_source != (width as u32, height as u32, format) {
             // SAFETY: a previous context, if any, is ours to free.
             unsafe {
@@ -916,7 +919,7 @@ impl Decoder {
                 }
             }
             // SAFETY: all arguments describe the source and a YUV420P
-            // destination of the same size; SWS_BILINEAR is a supported flag and
+            // destination of the same size; `BILINEAR` is a supported flag and
             // the three nulls are the default scaling callbacks.
             self.sws = unsafe {
                 ffi::sws_getContext(
@@ -926,7 +929,7 @@ impl Decoder {
                     width,
                     height,
                     ffi::AVPixelFormat::AV_PIX_FMT_YUV420P,
-                    ffi::SWS_BILINEAR as c_int,
+                    ffmpeg::software::scaling::Flags::BILINEAR.bits(),
                     ptr::null_mut(),
                     ptr::null_mut(),
                     ptr::null_mut(),
@@ -1007,7 +1010,7 @@ unsafe fn frame_to_video(
             let ptr = (*frame).data[index];
             let stride = (*frame).linesize[index];
             if ptr.is_null() || stride == 0 {
-                (ptr::null(), 0)
+                (ptr::null_mut(), 0)
             } else {
                 let packed = (stride.unsigned_abs() as usize).max(plane_w as usize);
                 let base = if stride < 0 {
@@ -1064,29 +1067,28 @@ unsafe fn frame_timestamp(frame: *const ffi::AVFrame, time_base: ffmpeg::Rationa
 
 /// Rotation from the display matrix in the frame's side data, in degrees.
 ///
-/// # Safety
-/// `frame` must be a valid `AVFrame`; the side data, if present, is a 9-entry
-/// i32 matrix owned by the frame.
-unsafe fn display_rotation(frame: *const ffi::AVFrame) -> i32 {
-    unsafe {
-        let side = ffi::av_frame_get_side_data(frame, ffi::AV_FRAME_DATA_DISPLAYMATRIX);
-        if side.is_null() {
-            return 0;
-        }
-        let matrix = (*side).data as *const i32;
-        if matrix.is_null() {
-            return 0;
-        }
-        let a = *matrix as f64;
-        let b = *matrix.add(1) as f64;
-        let angle = -b.atan2(a).to_degrees().round() as i32;
-        match angle.rem_euclid(360) {
-            0 => 0,
-            90 => 90,
-            180 => 180,
-            270 => 270,
-            _ => 0,
-        }
+/// The matrix is a 9-entry row-major `i32` matrix, and its first two entries are
+/// the top row of the 2×2 rotation block, which is enough for the four right
+/// angles phones and cameras actually record.
+fn display_rotation(frame: &ffmpeg::Frame) -> i32 {
+    let Some(side) = frame.side_data(ffmpeg::frame::side_data::Type::DisplayMatrix) else {
+        return 0;
+    };
+    let data = side.data();
+    if data.len() < 8 {
+        return 0;
+    }
+    let mut matrix = [0i32; 2];
+    for (slot, chunk) in matrix.iter_mut().zip(data.chunks_exact(4)) {
+        *slot = i32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    }
+    let angle = -(matrix[1] as f64).atan2(matrix[0] as f64).to_degrees().round() as i32;
+    match angle.rem_euclid(360) {
+        0 => 0,
+        90 => 90,
+        180 => 180,
+        270 => 270,
+        _ => 0,
     }
 }
 

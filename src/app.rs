@@ -450,9 +450,7 @@ impl App {
             return;
         };
         let crop = layer.crop;
-        let (w, h) = crop.visible(frame.width, frame.height);
         let (cx, cy, cw, ch) = crop.to_px(frame.width, frame.height);
-        let _ = (w, h);
         let cropped = CropPx {
             x: cx,
             y: cy,
@@ -594,9 +592,7 @@ impl App {
             self.toasts.error("Open a session to align.");
             return;
         }
-        if self.settings.last_session.is_none() {
-            let _ = ctx;
-        }
+        let _ = ctx;
         let session = self.session.as_ref().expect("checked above");
         let a = session
             .layers
@@ -692,8 +688,8 @@ impl App {
         let a_offset = session.layer(&a).map(|layer| layer.offset_us).unwrap_or(0);
         if let Some(layer) = session.layer_mut(&b) {
             layer.offset_us = a_offset + delta;
-            session.touch();
         }
+        session.touch();
         if let (Some(runtime), Some(session)) = (self.runtime.as_mut(), self.session.as_ref()) {
             runtime.apply_offsets(session);
         }
@@ -944,7 +940,7 @@ impl App {
                 .raw
                 .dropped_files
                 .iter()
-                .filter_map(|file| file.path.clone())
+                .filter_map(|file| Some(file.path().to_path_buf()))
                 .collect();
             (dropped, !input.raw.hovered_files.is_empty())
         });
@@ -1372,7 +1368,7 @@ impl App {
         if !hovering {
             return;
         }
-        let rect = ctx.screen_rect().shrink(24.0);
+        let rect = ctx.content_rect().shrink(24.0);
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
             egui::Id::new("drop-overlay"),
@@ -1399,27 +1395,28 @@ impl eframe::App for App {
         [0.0, 0.0, 0.0, 1.0]
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         let now = now_ms();
         self.toasts.tick(now);
-        self.handle_dropped(ctx);
-        for action in shortcuts::pressed(ctx) {
-            self.apply_action(action, ctx);
+        self.handle_dropped(&ctx);
+        for action in shortcuts::pressed(&ctx) {
+            self.apply_action(action, &ctx);
         }
         self.pump_engine();
 
         match self.screen {
-            Screen::Home => screens::home::show(self, ctx),
-            Screen::Sessions => screens::sessions::show(self, ctx),
-            Screen::Presets => screens::presets::show(self, ctx),
-            Screen::Studio => screens::studio::show(self, ctx),
-            Screen::Settings => screens::settings::show(self, ctx),
-            Screen::Player => screens::player::show(self, ctx),
+            Screen::Home => screens::home::show(self, ui),
+            Screen::Sessions => screens::sessions::show(self, ui),
+            Screen::Presets => screens::presets::show(self, ui),
+            Screen::Studio => screens::studio::show(self, ui),
+            Screen::Settings => screens::settings::show(self, ui),
+            Screen::Player => screens::player::show(self, ui),
         }
 
-        self.show_dialogs(ctx);
-        self.show_drop_overlay(ctx);
-        self.toasts.show(ctx);
+        self.show_dialogs(&ctx);
+        self.show_drop_overlay(&ctx);
+        self.toasts.show(&ctx);
 
         // Keep drawing while frames are moving or files are still opening.
         let playing = self.runtime.as_ref().map(|r| r.is_playing()).unwrap_or(false);
@@ -1496,7 +1493,6 @@ pub fn run() -> eframe::Result {
             .with_app_id("reaction-player")
             .with_drag_and_drop(true),
         renderer: eframe::Renderer::Wgpu,
-        vsync: true,
         multisampling: 0,
         depth_buffer: 0,
         stencil_buffer: 0,

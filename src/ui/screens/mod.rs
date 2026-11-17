@@ -1,6 +1,6 @@
 //! One module per screen plus the chrome they share.
 //!
-//! A screen is a function `show(app: &mut App, ctx: &Context)`: all the state it
+//! A screen is a function `show(app: &mut App, ui: &mut Ui)`: all the state it
 //! draws lives in [`crate::app::App`], so nothing here needs to allocate or own
 //! anything beyond the current frame.
 
@@ -18,15 +18,16 @@ use crate::ui::{theme, widgets};
 
 /// The top bar every non-fullscreen screen uses: the title on the left, the
 /// navigation on the right, one hairline underneath.
-pub fn header(app: &mut App, ctx: &egui::Context, title: &str) {
-    egui::TopBottomPanel::top("chrome")
-        .exact_height(48.0)
+pub fn header(app: &mut App, ui: &mut egui::Ui, title: &str) {
+    egui::Panel::top("chrome")
+        .exact_size(48.0)
+        .show_separator_line(true)
         .frame(
             egui::Frame::new()
                 .fill(theme::BG)
                 .inner_margin(egui::Margin::symmetric(16, 8)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.label(RichText::new(title).color(theme::TEXT).size(15.0).strong());
                 ui.add_space(10.0);
@@ -64,7 +65,7 @@ pub fn header(app: &mut App, ctx: &egui::Context, title: &str) {
                             .clicked()
                         {
                             if screen == Screen::Studio {
-                                app.open_studio(ctx);
+                                app.open_studio(ui.ctx());
                             } else {
                                 app.go(screen);
                             }
@@ -72,19 +73,7 @@ pub fn header(app: &mut App, ctx: &egui::Context, title: &str) {
                     }
                 });
             });
-        })
-        .response
-        .on_hover_cursor(egui::CursorIcon::Default);
-    // The hairline under the chrome.
-    let rect = egui::Rect::from_min_size(
-        egui::pos2(0.0, 48.0),
-        egui::vec2(ctx.screen_rect().width(), 1.0),
-    );
-    ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Background,
-        egui::Id::new("chrome-rule"),
-    ))
-    .rect_filled(rect, 0.0, theme::LINE);
+        });
 }
 
 /// Paint the wallpaper across a rectangle, darkened so white text stays legible,

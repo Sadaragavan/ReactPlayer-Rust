@@ -300,7 +300,7 @@ impl Compositor {
         let uniform_stride = device
             .limits()
             .min_uniform_buffer_offset_alignment
-            .max(crate::gpu::UNIFORM_STRIDE) as usize;
+            .max(crate::gpu::UNIFORM_STRIDE as u32) as usize;
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("reaction-player.uniforms"),
             size: (uniform_stride * MAX_DRAWS) as u64,

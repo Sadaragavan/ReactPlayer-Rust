@@ -9,10 +9,10 @@ use super::{background, status_line};
 use crate::app::{App, Screen};
 use crate::ui::theme;
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
+pub fn show(app: &mut App, ui: &mut egui::Ui) {
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(theme::BG))
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             let rect = ui.max_rect();
             background(app, ui, rect);
 
@@ -58,7 +58,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             )
                             .clicked()
                         {
-                            continue_last(app, ctx);
+                            continue_last(app, ui.ctx());
                         }
                         ui.add_space(8.0);
                     }
@@ -135,7 +135,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             )
                             .clicked()
                         {
-                            app.open_demo(ctx);
+                            app.open_demo(ui.ctx());
                         }
                         if ui
                             .add_sized(

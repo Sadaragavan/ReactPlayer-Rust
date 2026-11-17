@@ -16,12 +16,12 @@ use crate::gpu::renderer::{
 use crate::model::geom::Size;
 use crate::ui::{theme, widgets};
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
+pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if app.session.is_none() {
-        header(app, ctx, "Alignment Studio");
+        header(app, ui, "Alignment Studio");
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BG))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(100.0);
                     ui.label(
@@ -38,16 +38,17 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         return;
     }
 
-    header(app, ctx, "Alignment Studio");
+    let ctx = ui.ctx().clone();
+    header(app, ui, "Alignment Studio");
 
     // ---- controls ------------------------------------------------------
-    egui::TopBottomPanel::top("studio-controls")
+    egui::Panel::top("studio-controls")
         .frame(
             egui::Frame::new()
                 .fill(theme::BG)
                 .inner_margin(egui::Margin::symmetric(16, 10)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 let names: Vec<(String, String)> = app
                     .session
@@ -162,7 +163,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 .fill(theme::BG)
                 .inner_margin(egui::Margin::same(16)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             let ids = (app.studio.a.clone(), app.studio.b.clone());
             ui.columns(2, |columns| {
                 pane(app, &mut columns[0], ids.0.as_deref(), "A · reference");
@@ -202,7 +203,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 percent: app.studio.wipe_percent,
                             },
                         };
-                        let ppp = ctx.pixels_per_point();
+                        let ppp = ui.ctx().pixels_per_point();
                         let quads = vec![QuadDesc {
                             key: stu_dio(),
                             rect: PixelRect::from_points(rect, ppp),

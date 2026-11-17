@@ -318,7 +318,7 @@ pub fn apply_preset(session: &mut Session, preset: &Preset) {
         return;
     }
     let order = session.paint_order();
-    for (slot_index, layer_index) in order.into_iter().enumerate() {
+    for (slot_index, layer_index) in order.clone().into_iter().enumerate() {
         let slot = &preset.slots[slot_index.min(preset.slots.len() - 1)];
         let layer = &mut session.layers[layer_index];
         layer.rect = slot.rect;

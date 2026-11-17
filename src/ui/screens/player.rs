@@ -29,11 +29,11 @@ use crate::ui::{theme, widgets};
 const HANDLE_SIZE: f32 = 7.0;
 const SNAP_TOLERANCE_PX: f32 = 8.0;
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
+pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if app.session.is_none() {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BG))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(120.0);
                     ui.label(
@@ -58,27 +58,27 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 
     if app.theater {
         // Theater: canvas and a minimal transport, nothing else. Escape leaves.
-        transport(app, ctx, true);
-        canvas(app, ctx);
+        transport(app, ui, true);
+        canvas(app, ui);
     } else {
-        top_bar(app, ctx);
-        transport(app, ctx, false);
+        top_bar(app, ui);
+        transport(app, ui, false);
         if app.layers_panel {
-            layers_panel(app, ctx);
+            layers_panel(app, ui);
         }
-        canvas(app, ctx);
+        canvas(app, ui);
     }
 }
 
-fn top_bar(app: &mut App, ctx: &egui::Context) {
-    egui::TopBottomPanel::top("player-top")
-        .exact_height(46.0)
+fn top_bar(app: &mut App, ui: &mut egui::Ui) {
+    egui::Panel::top("player-top")
+        .exact_size(46.0)
         .frame(
             egui::Frame::new()
                 .fill(theme::BG)
                 .inner_margin(egui::Margin::symmetric(14, 7)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 if ui
                     .add(
@@ -128,7 +128,7 @@ fn top_bar(app: &mut App, ctx: &egui::Context) {
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button("Studio").clicked() {
-                        app.open_studio(ctx);
+                        app.open_studio(ui.ctx());
                     }
                     if ui.button("Save").clicked() {
                         app.save_current();
@@ -169,14 +169,14 @@ fn top_bar(app: &mut App, ctx: &egui::Context) {
 
 // ---- canvas --------------------------------------------------------------
 
-fn canvas(app: &mut App, ctx: &egui::Context) {
+fn canvas(app: &mut App, ui: &mut egui::Ui) {
     egui::CentralPanel::default()
         .frame(
             egui::Frame::new()
                 .fill(theme::BG)
                 .inner_margin(egui::Margin::same(if app.theater { 0 } else { 12 })),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             let available = ui.available_rect_before_wrap();
             let aspect = app
                 .session
@@ -189,7 +189,7 @@ fn canvas(app: &mut App, ctx: &egui::Context) {
                 egui::vec2(size.w.max(32.0), size.h.max(18.0)),
             );
             let response = ui.allocate_rect(rect, Sense::click_and_drag());
-            let ppp = ctx.pixels_per_point();
+            let ppp = ui.ctx().pixels_per_point();
 
             // Everything below works in points and converts once, at the end.
             let canvas_size = Size::new(rect.width(), rect.height());
@@ -200,7 +200,8 @@ fn canvas(app: &mut App, ctx: &egui::Context) {
             draw_guides(app, ui, rect);
 
             // Right-click menu, on whatever layer is under the cursor.
-            let point = ctx
+            let point = ui
+                .ctx()
                 .input(|input| input.pointer.interact_pos())
                 .map(|pos| to_norm(rect, pos));
             if response.clicked_by(PointerButton::Secondary) {
@@ -544,13 +545,23 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui) {
         ui.label(RichText::new("No layer selected").color(theme::MUTED).size(11.5));
         return;
     };
-    let Some(session) = app.session.as_ref() else {
+    // Snapshot what the menu needs, so every button below can borrow the
+    // session mutably without fighting the borrow checker.
+    let Some(snapshot) = app.session.as_ref().and_then(|session| session.layer(&id)) else {
         return;
     };
-    let Some(layer) = session.layer(&id) else {
-        return;
-    };
-    let name = layer.name.clone();
+    let name = snapshot.name.clone();
+    let mut crop = snapshot.crop;
+    let mut opacity = snapshot.opacity;
+    let mut fit = snapshot.fit;
+    let mut locked = snapshot.locked;
+    let mut visible = snapshot.visible;
+    let master = app
+        .session
+        .as_ref()
+        .and_then(|session| session.master_audio.clone());
+    let is_master = master.as_deref() == Some(id.as_str());
+
     ui.label(RichText::new(name).color(theme::TEXT).size(12.5).strong());
     ui.separator();
 
@@ -591,7 +602,6 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui) {
 
     // Crop sliders.
     ui.label(RichText::new("Crop").color(theme::MUTED).size(11.0));
-    let mut crop = session.layer(&id).map(|layer| layer.crop).unwrap_or(Crop::ZERO);
     let before = crop;
     widgets::percent(ui, "Left", &mut crop.left);
     widgets::percent(ui, "Top", &mut crop.top);
@@ -604,22 +614,19 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui) {
     }
     ui.separator();
 
-    let mut opacity = session.layer(&id).map(|layer| layer.opacity).unwrap_or(1.0);
     if widgets::percent(ui, "Opacity", &mut opacity).changed() {
         if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
             layer.opacity = opacity;
         }
     }
 
-    let fit = session.layer(&id).map(|layer| layer.fit).unwrap_or(FitMode::Contain);
     if ui.button(format!("Fit: {}", fit.label())).clicked() {
+        fit = fit.toggled();
         if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
-            layer.fit = layer.fit.toggled();
+            layer.fit = fit;
         }
     }
 
-    let mut master = session.master_audio.clone();
-    let is_master = master.as_deref() == Some(id.as_str());
     if ui
         .button(if is_master {
             "Master audio: this layer"
@@ -631,27 +638,26 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui) {
         if let Some(session) = app.session.as_mut() {
             session.master_audio = Some(id.clone());
         }
-        master = Some(id.clone());
         ui.close();
     }
 
-    let locked = session.layer(&id).map(|layer| layer.locked).unwrap_or(false);
     if ui
         .button(if locked { "Unlock layer" } else { "Lock layer" })
         .clicked()
     {
+        locked = !locked;
         if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
-            layer.locked = !layer.locked;
+            layer.locked = locked;
         }
     }
 
-    let visible = session.layer(&id).map(|layer| layer.visible).unwrap_or(true);
     if ui
         .button(if visible { "Hide layer" } else { "Show layer" })
         .clicked()
     {
+        visible = !visible;
         if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
-            layer.visible = !layer.visible;
+            layer.visible = visible;
         }
     }
 
@@ -675,21 +681,20 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui) {
         app.sync_engine();
         ui.close();
     }
-    let _ = master;
 }
 
 // ---- transport -----------------------------------------------------------
 
-fn transport(app: &mut App, ctx: &egui::Context, theater: bool) {
+fn transport(app: &mut App, ui: &mut egui::Ui, theater: bool) {
     let height = if theater { 64.0 } else { 104.0 };
-    egui::TopBottomPanel::bottom("transport")
-        .exact_height(height)
+    egui::Panel::bottom("transport")
+        .exact_size(height)
         .frame(
             egui::Frame::new()
                 .fill(theme::BG)
                 .inner_margin(egui::Margin::symmetric(14, 8)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             let (playing, position, union) = match (app.session.as_ref(), app.runtime.as_ref()) {
                 (Some(session), Some(runtime)) => (
                     runtime.is_playing(),
@@ -776,8 +781,8 @@ fn transport(app: &mut App, ctx: &egui::Context, theater: bool) {
                         .clicked()
                     {
                         let fullscreen =
-                            ctx.input(|input| input.viewport().fullscreen.unwrap_or(false));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
+                            ui.ctx().input(|input| input.viewport().fullscreen.unwrap_or(false));
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
                     }
                     let theater_label = if app.theater { "Exit theater" } else { "Theater" };
                     if ui
@@ -946,9 +951,9 @@ fn scrubber(
 
 // ---- layers panel --------------------------------------------------------
 
-fn layers_panel(app: &mut App, ctx: &egui::Context) {
-    egui::SidePanel::right("layers")
-        .exact_width(268.0)
+fn layers_panel(app: &mut App, ui: &mut egui::Ui) {
+    egui::Panel::right("layers")
+        .exact_size(268.0)
         .resizable(false)
         .frame(
             egui::Frame::new()
@@ -956,7 +961,7 @@ fn layers_panel(app: &mut App, ctx: &egui::Context) {
                 .inner_margin(egui::Margin::same(12))
                 .stroke(theme::hairline(theme::LINE)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Layers").color(theme::TEXT).size(13.0).strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -997,7 +1002,7 @@ fn layers_panel(app: &mut App, ctx: &egui::Context) {
             for (display_row, (id, name, visible, locked, selected)) in
                 rows.into_iter().enumerate()
             {
-                let drop = ui
+                let dropped = ui
                     .dnd_drop_zone::<String, _>(
                         egui::Frame::new()
                             .fill(if selected { theme::FILL_ACTIVE } else { theme::BG })
@@ -1066,7 +1071,7 @@ fn layers_panel(app: &mut App, ctx: &egui::Context) {
                     )
                     .1;
 
-                if let Some(dragged) = drop {
+                if let Some(dragged) = dropped {
                     // Dropping onto a row moves the dragged layer to that slot.
                     let target_paint = count - 1 - display_row;
                     if let Some(session) = app.session.as_mut() {

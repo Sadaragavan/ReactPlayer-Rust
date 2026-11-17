@@ -10,8 +10,9 @@ use crate::app::App;
 use crate::model::presets::LayoutType;
 use crate::ui::{theme, widgets};
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    header(app, ctx, "Presets");
+pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    let ctx = ui.ctx().clone();
+    header(app, ui, "Presets");
 
     egui::CentralPanel::default()
         .frame(
@@ -19,7 +20,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 .fill(theme::BG)
                 .inner_margin(egui::Margin::same(24)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             let has_session = app.session.is_some();
             ui.columns(2, |columns| {
                 // ---- the library -----------------------------------
@@ -174,7 +175,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         )
                         .clicked()
                     {
-                        app.open_studio(ctx);
+                        app.open_studio(&ctx);
                     }
                     if let Some(delta) = app.studio.delta_us() {
                         ui.label(

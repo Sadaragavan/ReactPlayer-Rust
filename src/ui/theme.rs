@@ -64,19 +64,22 @@ pub fn float_frame() -> egui::Frame {
 /// Install the theme on a context. Called once at startup and whenever the
 /// style was changed behind our back (egui keeps a zoom factor on it).
 pub fn apply(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
-    style.animation_time = 0.0;
-    style.visuals = visuals();
-    style.spacing.item_spacing = Vec2::new(8.0, 6.0);
-    style.spacing.button_padding = Vec2::new(10.0, 6.0);
-    style.spacing.window_margin = Margin::same(16);
-    style.spacing.menu_margin = Margin::same(4);
-    style.spacing.interact_size = Vec2::new(28.0, 24.0);
-    style.spacing.slider_width = 140.0;
-    style.spacing.indent = 14.0;
-    style.spacing.menu_width = 240.0;
-    style.text_styles = text_styles();
-    ctx.set_style(style);
+    // Both themes get the same style: the application is dark by definition,
+    // and a light system theme must not repaint it grey.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.all_styles_mut(|style| {
+        style.animation_time = 0.0;
+        style.visuals = visuals();
+        style.spacing.item_spacing = Vec2::new(8.0, 6.0);
+        style.spacing.button_padding = Vec2::new(10.0, 6.0);
+        style.spacing.window_margin = Margin::same(16);
+        style.spacing.menu_margin = Margin::same(4);
+        style.spacing.interact_size = Vec2::new(28.0, 24.0);
+        style.spacing.slider_width = 140.0;
+        style.spacing.indent = 14.0;
+        style.spacing.menu_width = 240.0;
+        style.text_styles = text_styles();
+    });
 }
 
 /// The type scale: one family, a handful of sizes.

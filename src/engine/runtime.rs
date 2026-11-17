@@ -127,7 +127,7 @@ impl Runtime {
     }
 
     pub fn audio_status(&self) -> AudioStatus {
-        *self.audio.status()
+        self.audio.status().clone()
     }
 
     pub fn device_rate(&self) -> u32 {

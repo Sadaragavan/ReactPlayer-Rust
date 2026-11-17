@@ -7,9 +7,10 @@ use super::header;
 use crate::app::{App, Screen};
 use crate::ui::{theme, widgets};
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
+pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let mut toast: Option<String> = None;
-    header(app, ctx, "Sessions");
+    let ctx = ui.ctx().clone();
+    header(app, ui, "Sessions");
 
     egui::CentralPanel::default()
         .frame(
@@ -17,7 +18,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 .fill(theme::BG)
                 .inner_margin(egui::Margin::same(24)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui
                     .add(
@@ -32,7 +33,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     app.new_session_with_files(Vec::new());
                 }
                 if ui.button("Import .rplay.json…").clicked() {
-                    app.import_session(ctx);
+                    app.import_session(&ctx);
                 }
                 if ui.button("Refresh").clicked() {
                     app.refresh_sessions();

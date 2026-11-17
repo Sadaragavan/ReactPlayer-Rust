@@ -8,8 +8,9 @@ use crate::app::App;
 use crate::model::settings::HwAccelPref;
 use crate::ui::{theme, widgets};
 
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    header(app, ctx, "Settings");
+pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    let ctx = ui.ctx().clone();
+    header(app, ui, "Settings");
     let mut changed = false;
 
     egui::CentralPanel::default()
@@ -18,7 +19,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 .fill(theme::BG)
                 .inner_margin(egui::Margin::same(24)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.set_max_width(760.0);
 
@@ -34,7 +35,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     );
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        for pref in [HwAccelPref::Auto, HwAccelPref::Software] {
+                        for pref in HwAccelPref::ALL {
                             let on = app.settings.hw_accel == pref;
                             if ui
                                 .add(
@@ -151,11 +152,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui.button("Choose image…").clicked() {
-                            app.pick_wallpaper(ctx);
+                            app.pick_wallpaper(&ctx);
                         }
                         if ui.button("Reset to black").clicked() {
                             app.settings.wallpaper = None;
-                            app.reload_wallpaper(ctx);
+                            app.reload_wallpaper(&ctx);
                             changed = true;
                         }
                     });
@@ -194,9 +195,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     ui.add_space(6.0);
                     ui.label(
                         RichText::new(format!(
-                            "Reaction Player {} · egui {}",
-                            env!("CARGO_PKG_VERSION"),
-                            eframe::egui::VERSION
+                            "Reaction Player {}",
+                            env!("CARGO_PKG_VERSION")
                         ))
                         .color(theme::MUTED)
                         .size(10.5),

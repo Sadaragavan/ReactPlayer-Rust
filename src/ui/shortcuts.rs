@@ -176,7 +176,7 @@ pub fn action_for(key: Key, modifiers: Modifiers) -> Option<Action> {
 /// Keys pressed this frame, in press order. Panels and menus consume input
 /// before this is called, and the app skips it while a text field has focus.
 pub fn pressed(ctx: &eframe::egui::Context) -> Vec<Action> {
-    if ctx.wants_keyboard_input() {
+    if ctx.egui_wants_keyboard_input() {
         return Vec::new();
     }
     ctx.input(|input| {

@@ -99,7 +99,7 @@ impl Toasts {
         if self.items.is_empty() {
             return;
         }
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let anchor = egui::pos2(screen.center().x, screen.bottom() - 84.0);
         egui::Area::new(egui::Id::new("toasts"))
             .order(egui::Order::Foreground)
@@ -176,7 +176,7 @@ mod tests {
             toasts.info(format!("message {index}"));
         }
         assert_eq!(toasts.len(), 3);
-        assert_eq!(toasts.last().map(String::as_str), Some("message 5"));
+        assert_eq!(toasts.last().map(|toast| toast.text.as_str()), Some("message 5"));
     }
 
     #[test]
