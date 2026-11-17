@@ -339,7 +339,6 @@ impl Track {
             paused: true,
             frames_decoded: 0,
             rotation_read: false,
-            target_us: 0,
         };
         let video_thread = thread::Builder::new()
             .name(format!("video:{}", config.source.display()))
@@ -431,8 +430,6 @@ struct VideoWorker {
     paused: bool,
     frames_decoded: u64,
     rotation_read: bool,
-    /// Where the last seek put us, in microseconds.
-    target_us: i64,
 }
 
 impl VideoWorker {
@@ -573,7 +570,6 @@ impl VideoWorker {
     /// Discarding frames after the keyframe is what makes the seek exact.
     fn seek_to(&mut self, decoder: &mut Decoder, target_us: i64) -> Result<(), String> {
         decoder.seek(target_us)?;
-        self.target_us = target_us;
         let mut last: Option<VideoFrame> = None;
         for _ in 0..MAX_SEEK_FRAMES {
             match decoder.next_frame(&self.pool) {
@@ -778,7 +774,7 @@ impl Decoder {
                 self.input.as_mut_ptr(),
                 self.stream_index as c_int,
                 ts,
-                ffi::AVSEEK_FLAG_BACKWARD,
+                ffi::AVSEEK_FLAG_BACKWARD as c_int,
             )
         };
         if ret < 0 {
@@ -982,7 +978,7 @@ fn pixel_format_to_frame_format(format: c_int) -> Option<FrameFormat> {
 /// # Safety
 /// `frame` must be a valid, decoded `AVFrame` whose format is `format`.
 unsafe fn frame_to_video(
-    frame: *mut ffi::AVFrame,
+    frame: *const ffi::AVFrame,
     format: FrameFormat,
     time_base: ffmpeg::Rational,
     pool: &Arc<BufferPool>,
@@ -1046,7 +1042,7 @@ unsafe fn frame_to_video(
 ///
 /// # Safety
 /// `frame` must be a valid `AVFrame`.
-unsafe fn frame_timestamp(frame: *mut ffi::AVFrame, time_base: ffmpeg::Rational) -> i64 {
+unsafe fn frame_timestamp(frame: *const ffi::AVFrame, time_base: ffmpeg::Rational) -> i64 {
     unsafe {
         let mut ts = (*frame).best_effort_timestamp;
         if ts == NO_PTS {
@@ -1071,7 +1067,7 @@ unsafe fn frame_timestamp(frame: *mut ffi::AVFrame, time_base: ffmpeg::Rational)
 /// # Safety
 /// `frame` must be a valid `AVFrame`; the side data, if present, is a 9-entry
 /// i32 matrix owned by the frame.
-unsafe fn display_rotation(frame: *mut ffi::AVFrame) -> i32 {
+unsafe fn display_rotation(frame: *const ffi::AVFrame) -> i32 {
     unsafe {
         let side = ffi::av_frame_get_side_data(frame, ffi::AV_FRAME_DATA_DISPLAYMATRIX);
         if side.is_null() {

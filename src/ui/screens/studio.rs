@@ -213,7 +213,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             other: Some(frame_b),
                             compare,
                         }];
-                        ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+                        ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
                             rect,
                             CompositorCallback::new(quads),
                         ));
@@ -315,7 +315,7 @@ fn pane(app: &mut App, ui: &mut egui::Ui, id: Option<&str>, title: &str) {
                     other: None,
                     compare: QuadMode::Single,
                 }];
-                ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+                ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
                     rect,
                     CompositorCallback::new(quads),
                 ));

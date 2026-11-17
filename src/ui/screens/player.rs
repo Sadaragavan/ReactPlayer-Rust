@@ -19,8 +19,7 @@ use crate::engine::video_frame::VideoFrame;
 use crate::gpu::renderer::{CompositorCallback, PixelRect, QuadDesc};
 use crate::gpu::renderer::CompareMode as QuadMode;
 use crate::model::geom::{
-    apply_aspect, hit_handle, resize_with_handle, snap_move, Crop, Handle, NormRect, Point, Size,
-    MIN_LAYER_SIZE,
+    hit_handle, resize_with_handle, snap_move, Crop, Handle, NormRect, Point, Size, MIN_LAYER_SIZE,
 };
 use crate::model::session::{CanvasAspect, FitMode, Layer, Session};
 use crate::model::timeline;
@@ -212,7 +211,7 @@ fn canvas(app: &mut App, ctx: &egui::Context) {
                     }
                 }
             }
-            response.context_menu(|ui| context_menu(app, ui));
+            let _ = response.context_menu(|ui| context_menu(app, ui));
         });
 }
 
@@ -421,7 +420,7 @@ fn draw_frames(app: &App, ui: &egui::Ui, rect: egui::Rect, ppp: f32) {
     }
 
     if !quads.is_empty() {
-        ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+        ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
             rect,
             CompositorCallback::new(quads),
         ));
@@ -1213,6 +1212,7 @@ pub fn min_size() -> f32 {
 mod tests {
     use super::*;
     use crate::engine::video_frame::{ColorRange, FrameFormat, PlaneBuf};
+    use crate::model::geom::apply_aspect;
     use crate::model::session::{MediaSource, Role};
 
     fn frame(w: u32, h: u32) -> Arc<VideoFrame> {

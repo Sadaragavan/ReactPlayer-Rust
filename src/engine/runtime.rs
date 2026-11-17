@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::model::session::{now_ms, Layer, MediaSource, Session};
+use crate::model::session::{now_ms, Layer, Session};
 use crate::model::settings::Settings;
 use crate::model::timeline::{self, DriftClass, Union};
 
@@ -713,7 +713,7 @@ impl Drop for Runtime {
 mod tests {
     use super::*;
     use crate::model::geom::NormRect;
-    use crate::model::session::Role;
+    use crate::model::session::{MediaSource, Role};
 
     fn silent_layer(name: &str, z: i32) -> Layer {
         let mut layer = Layer::new(

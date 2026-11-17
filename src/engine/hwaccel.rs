@@ -298,7 +298,7 @@ impl HwDecoder {
     /// `src` must be a frame decoded by the codec this device was attached to,
     /// and `dst` must be a valid frame from `av_frame_alloc` that is currently
     /// unreferenced.
-    pub unsafe fn transfer(src: *mut ffi::AVFrame, dst: *mut ffi::AVFrame) -> Result<(), String> {
+    pub unsafe fn transfer(src: *const ffi::AVFrame, dst: *mut ffi::AVFrame) -> Result<(), String> {
         if src.is_null() || dst.is_null() {
             return Err("hardware transfer: null frame".to_owned());
         }
