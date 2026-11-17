@@ -17,37 +17,41 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev libasound2-dev libva-dev libvulkan-dev pkg-config clang libudev-dev
-      - name: probe
+      - name: probe runner
         run: |
-          exec > >(tee -a ci-report.txt) 2>&1
           set +e
-          echo "=== ubuntu ==="
-          . /etc/os-release; echo "$PRETTY_NAME"
-          echo "rustc: $(rustc --version)"; echo "cargo: $(cargo --version)"
-          echo "clang: $(clang --version | head -1)"
-          echo "--- pkg-config ffmpeg ---"
-          for l in libavcodec libavformat libavutil libswscale libswresample libavfilter libavdevice; do echo "$l $(pkg-config --modversion $l)"; done
-          echo "--- ffmpeg ---"
-          ffmpeg -version | head -2
-          echo "--- crates.io latest ---"
-          for c in eframe egui egui-wgpu wgpu wgpu-hal bytemuck ffmpeg-next ffmpeg-sys-next cpal ringbuf arboard rfd directories serde serde_json image pollster; do
-            printf '%s ' "$c"
-            curl -s -H 'User-Agent: probe' "https://crates.io/api/v1/crates/$c" | python3 -c 'import json,sys
-try:
-    d=json.load(sys.stdin); print(d["crate"]["max_stable_version"])
-except Exception as e:
-    print("ERR", e)'
-          done
-          echo "=== arch ==="
-          docker run --rm archlinux:latest bash -c 'pacman -Sy --noconfirm --quiet >/dev/null 2>&1; pacman -Si ffmpeg rust clang | grep -E "^(Name|Version)" ; pacman -Si ffmpeg | grep -A1 "Depends On"' 2>&1 | head -40
+          {
+            echo "=== ubuntu ==="
+            . /etc/os-release; echo "$PRETTY_NAME"
+            echo "rustc: $(rustc --version)"
+            echo "cargo: $(cargo --version)"
+            echo "clang: $(clang --version | head -1)"
+            echo "--- pkg-config ffmpeg ---"
+            for l in libavcodec libavformat libavutil libswscale libswresample libavfilter libavdevice; do printf '%s %s\n' "$l" "$(pkg-config --modversion $l)"; done
+            echo "--- crates.io latest ---"
+            for c in eframe egui egui-wgpu wgpu wgpu-hal bytemuck ffmpeg-next ffmpeg-sys-next cpal ringbuf arboard rfd directories serde serde_json image pollster; do
+              printf '%s %s\n' "$c" "$(curl -s -H 'User-Agent: probe' https://crates.io/api/v1/crates/$c | jq -r .crate.max_stable_version)"
+            done
+          } > ci-report.txt 2>&1
+          cat ci-report.txt
+      - name: probe arch
+        run: |
+          set +e
+          {
+            echo "=== archlinux container ==="
+            docker run --rm archlinux:latest bash -c 'pacman -Sy --noconfirm --quiet >/dev/null 2>&1; pacman -Si ffmpeg | grep -E "^(Name|Version|Depends On)"'
+            echo "--- arch rust ---"
+            docker run --rm archlinux:latest bash -c 'pacman -Sy --noconfirm --quiet >/dev/null 2>&1; pacman -Si rust clang | grep -E "^(Name|Version)"'
+          } >> ci-report.txt 2>&1
+          tail -30 ci-report.txt
       - name: publish report
         if: always()
         run: |
-          git config user.name "ci"
-          git config user.email "ci@localhost"
+          git config user.name ci
+          git config user.email ci@localhost
           git add -f ci-report.txt
           git commit -q -m "ci: probe report [skip ci]" || exit 0
           for i in 1 2 3 4 5; do
-            git pull --rebase -q && git push -q && break
+            if git pull --rebase -q && git push -q; then break; fi
             sleep 5
           done
