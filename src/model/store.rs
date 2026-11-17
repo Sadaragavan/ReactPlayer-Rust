@@ -171,7 +171,13 @@ impl Store {
                 missing_media: session.missing_media().len(),
             });
         }
-        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        // Newest first; ids break ties so two sessions saved inside the same
+        // millisecond still come back in a stable order.
+        out.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
         out
     }
 
@@ -458,6 +464,9 @@ mod tests {
         let mut a = session("older");
         a.updated_at = 1_000;
         store.save_session(&mut a).unwrap();
+        // Saving stamps `updated_at`, and the list orders by it, so the second
+        // save has to land in a later millisecond to be "newer".
+        std::thread::sleep(std::time::Duration::from_millis(5));
         let mut b = session("newer");
         store.save_session(&mut b).unwrap();
         let list = store.list_sessions();

@@ -201,8 +201,10 @@ fn run_ffmpeg(args: &[String]) -> Result<(), String> {
 /// picture-in-picture inset on top, pre-offset by the flash.
 pub fn build_session(clips: &DemoClips) -> Session {
     let mut session = Session::new("Demo - flash alignment");
-    let rects = layout_rects(LayoutType::PipSourceOverReaction, 2);
-    let z = layout_z(LayoutType::PipSourceOverReaction, 2);
+    // The reaction sits in the bottom-right corner, on top of the source, which
+    // is the arrangement the demo is meant to show off.
+    let rects = layout_rects(LayoutType::PipReactionOverSource, 2);
+    let z = layout_z(LayoutType::PipReactionOverSource, 2);
     let mut source = crate::model::session::Layer::new(
         "Source",
         Role::Source,

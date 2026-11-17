@@ -170,30 +170,39 @@ mod tests {
     }
 
     #[test]
-    fn faster_rate_produces_more_frames() {
+    fn a_faster_rate_plays_the_same_input_in_less_time() {
+        // `rate` is a speed factor: at 1.005 the resampler walks through 1.005
+        // input frames for every output frame it emits, so the same chunk comes
+        // out shorter, which is what closes a drift where the track is behind.
         let mut r = FractionalResampler::new();
         r.set_rate(MAX_RATE);
         let input = ramp(10_000, 0.0);
         let mut out = Vec::new();
         r.process(&input, &mut out);
         let produced = out.len() / 2;
-        let expected = (10_000.0 * MAX_RATE) as usize;
+        let expected = (10_000.0 / MAX_RATE) as usize;
         assert!(
             produced.abs_diff(expected) <= 2,
             "produced {produced}, expected about {expected}"
         );
+        assert!(produced < 10_000);
+        assert_eq!(r.counters(), (10_000, produced as u64));
     }
 
     #[test]
-    fn slower_rate_produces_fewer_frames() {
+    fn a_slower_rate_stretches_the_same_input() {
         let mut r = FractionalResampler::new();
         r.set_rate(MIN_RATE);
         let input = ramp(10_000, 0.0);
         let mut out = Vec::new();
         r.process(&input, &mut out);
         let produced = out.len() / 2;
-        let expected = (10_000.0 * MIN_RATE) as usize;
-        assert!(produced.abs_diff(expected) <= 2, "{produced} vs {expected}");
+        let expected = (10_000.0 / MIN_RATE) as usize;
+        assert!(
+            produced.abs_diff(expected) <= 2,
+            "produced {produced}, expected about {expected}"
+        );
+        assert!(produced > 10_000);
     }
 
     #[test]

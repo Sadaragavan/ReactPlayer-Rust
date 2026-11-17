@@ -494,7 +494,13 @@ mod tests {
         let r = NormRect::new(0.1, 0.2, 0.3, 0.4);
         let px = r.to_px(canvas());
         assert_eq!(px, PxRect::new(160.0, 180.0, 480.0, 360.0));
-        assert_eq!(NormRect::from_px(px, canvas()), r);
+        // A round trip through pixels divides by the canvas size twice, so it
+        // lands within float noise rather than exactly on the input.
+        let back = NormRect::from_px(px, canvas());
+        assert!((back.x - r.x).abs() < 1e-6, "{back:?} vs {r:?}");
+        assert!((back.y - r.y).abs() < 1e-6, "{back:?} vs {r:?}");
+        assert!((back.w - r.w).abs() < 1e-6, "{back:?} vs {r:?}");
+        assert!((back.h - r.h).abs() < 1e-6, "{back:?} vs {r:?}");
         assert!((r.aspect_px(canvas()) - 480.0 / 360.0).abs() < 1e-5);
     }
 
@@ -615,7 +621,9 @@ mod tests {
 
     #[test]
     fn no_snap_when_far_away() {
-        let r = NormRect::new(0.2, 0.35, 0.3, 0.3);
+        // Every edge and centre of this rectangle is tens of pixels away from
+        // the canvas edges and centre lines.
+        let r = NormRect::new(0.21, 0.37, 0.27, 0.29);
         let snap = snap_move(r, canvas(), &[], 4.0);
         assert_eq!(snap.rect, r);
         assert!(!snap.is_snapped());

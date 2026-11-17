@@ -20,8 +20,8 @@ struct Quad {
     // (opacity, mode, wipe percent, onion mix).
     // mode: 0 = single source, 1 = onion skin, 2 = wipe line.
     params: vec4<f32>,
-    // (target width, target height, srgb target flag, unused).
-    target: vec4<f32>,
+    // (output width, output height, srgb flag, unused).
+    viewport: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> quad: Quad;
@@ -47,8 +47,8 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
     let c = corners[index];
     let px = quad.rect.xy + c * quad.rect.zw;
     let ndc = vec2<f32>(
-        px.x / max(quad.target.x, 1.0) * 2.0 - 1.0,
-        1.0 - px.y / max(quad.target.y, 1.0) * 2.0,
+        px.x / max(quad.viewport.x, 1.0) * 2.0 - 1.0,
+        1.0 - px.y / max(quad.viewport.y, 1.0) * 2.0,
     );
     var out: VsOut;
     out.clip_pos = vec4<f32>(ndc, 0.0, 1.0);
@@ -126,7 +126,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
     }
 
-    if quad.target.z > 0.5 {
+    if quad.viewport.z > 0.5 {
         rgb = srgb_to_linear(rgb);
     }
     let alpha = clamp(quad.params.x, 0.0, 1.0);
