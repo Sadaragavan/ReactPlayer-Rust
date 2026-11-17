@@ -1,117 +1,114 @@
-//! Demo media generation.
+//! Demo clips, generated on the machine that runs the app.
 //!
-//! The demo session needs two synthetic clips that are visually and audibly
-//! easy to align:
+//! The demo exists so the player can be tried without hunting for footage. Two
+//! synthetic clips are generated with ffmpeg:
 //!
-//! * a **source** clip: `testsrc2` video plus a 1 kHz sine beep that starts at
-//!   a known point, and
-//! * a **reaction** clip: a flat colour flash 1500 ms later than the source's
-//!   flash, which is exactly the offset the demo session encodes
-//!   (`offset_us = +1_500_000`).
+//! * `source.mp4` - `testsrc2` at 30 fps with a white flash at the very start,
+//! * `reaction.mp4` - a flat background with a white flash 1500 ms later.
 //!
-//! `scripts/make-demo-clips.sh` produces byte-identical arguments from the
-//! shell. The app runs the same `ffmpeg` command line itself when the button
-//! is pressed and the clips are missing, so a user without the script still
-//! gets a working demo. If `ffmpeg` is not on `PATH` the failure is reported
-//! verbatim, never hidden behind a stub.
+//! The flash is a precise, easy-to-see event, which is exactly what the
+//! Alignment Studio needs: aligning the demo puts the reaction offset at
+//! `+1_500_000` us. `scripts/make-demo-clips.sh` runs the same commands so the
+//! clips can be built ahead of time, and the app runs them from Rust when the
+//! button is pressed.
+//!
+//! Nothing here needs network access: ffmpeg's `lavfi` sources are built in.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::error::{AppError, AppResult};
+use crate::model::geom::NormRect;
+use crate::model::presets::{layout_rects, layout_z, LayoutType};
+use crate::model::session::{MediaSource, Role, Session};
 
-/// File name of the demo source clip.
-pub const DEMO_SOURCE_FILE: &str = "source-testsrc2.mp4";
-/// File name of the demo reaction clip.
-pub const DEMO_REACTION_FILE: &str = "reaction-flash.mp4";
-/// Offset the demo session applies to the reaction layer, in microseconds.
-///
-/// Positive means "show the media later": the reaction flash happens 1500 ms
-/// after the source flash, so shifting the layer forward by 1500 ms makes the
-/// two flashes line up.
-pub const DEMO_REACTION_OFFSET_US: i64 = 1_500_000;
-/// Length of both clips, in seconds.
-pub const DEMO_DURATION_S: u32 = 10;
-/// Video frame rate of both clips.
-pub const DEMO_FPS: u32 = 30;
-/// Where the reaction clip's colour flash starts, in milliseconds.
-pub const DEMO_REACTION_FLASH_MS: u32 = 3_000;
-/// Where the source clip's flash starts, in milliseconds (1500 ms earlier).
-pub const DEMO_SOURCE_FLASH_MS: u32 = DEMO_REACTION_FLASH_MS - 1_500;
-/// Beep frequency used by both clips.
-pub const DEMO_BEEP_HZ: u32 = 1_000;
+/// Where the demo clips live under the app's data directory.
+pub const DEMO_DIR: &str = "demo";
 
-/// A resolved pair of demo clips.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DemoMedia {
-    /// Absolute path of the source clip.
+/// The flash in `reaction.mp4`, in microseconds. This is also the offset the
+/// demo session ships with.
+pub const DEMO_FLASH_US: i64 = 1_500_000;
+
+/// Length of both clips.
+pub const DEMO_DURATION_US: i64 = 8_000_000;
+
+/// The two files the demo needs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DemoClips {
     pub source: PathBuf,
-    /// Absolute path of the reaction clip.
     pub reaction: PathBuf,
 }
 
-impl DemoMedia {
-    /// Paths inside a data directory, whether or not the files exist.
-    pub fn paths_in(dir: &Path) -> Self {
-        Self {
-            source: dir.join(DEMO_SOURCE_FILE),
-            reaction: dir.join(DEMO_REACTION_FILE),
-        }
+impl DemoClips {
+    pub fn dir(&self) -> Option<&Path> {
+        self.source.parent()
     }
 
-    /// True when both files are present and non-empty.
-    pub fn exists(&self) -> bool {
-        is_nonempty(&self.source) && is_nonempty(&self.reaction)
-    }
-
-    /// The duration of the clips, in microseconds.
-    pub fn duration_us() -> i64 {
-        DEMO_DURATION_S as i64 * 1_000_000
+    pub fn exist(&self) -> bool {
+        is_clip(&self.source) && is_clip(&self.reaction)
     }
 }
 
-fn is_nonempty(path: &Path) -> bool {
+/// Paths of the demo clips for a data directory, without touching the disk.
+pub fn clips(data_dir: &Path) -> DemoClips {
+    DemoClips {
+        source: data_dir.join(DEMO_DIR).join("source.mp4"),
+        reaction: data_dir.join(DEMO_DIR).join("reaction.mp4"),
+    }
+}
+
+fn is_clip(path: &Path) -> bool {
     std::fs::metadata(path)
-        .map(|m| m.is_file() && m.len() > 0)
+        .map(|meta| meta.is_file() && meta.len() > 0)
         .unwrap_or(false)
 }
 
-/// The exact `ffmpeg` arguments for the source clip.
-///
-/// Kept separate from [`ensure_demo_media`] so the shell script and the tests
-/// can assert on the same list.
-pub fn source_args(path: &Path) -> Vec<String> {
+/// True when both clips are already on disk.
+pub fn is_ready(data_dir: &Path) -> bool {
+    clips(data_dir).exist()
+}
+
+/// Make sure both clips exist, generating them with ffmpeg if needed.
+pub fn ensure(data_dir: &Path) -> Result<DemoClips, String> {
+    let clips = clips(data_dir);
+    if clips.exist() {
+        return Ok(clips);
+    }
+    let dir = data_dir.join(DEMO_DIR);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    warn_if_ffmpeg_missing()?;
+    run_ffmpeg(&source_args(&clips.source))?;
+    run_ffmpeg(&reaction_args(&clips.reaction))?;
+    if !clips.exist() {
+        return Err("ffmpeg finished but the demo clips are missing".to_owned());
+    }
+    Ok(clips)
+}
+
+/// The ffmpeg arguments for the reference clip, shared by the app and the
+/// script so the two can never drift apart.
+pub fn source_args(output: &Path) -> Vec<String> {
     vec![
+        "-y".into(),
+        "-nostdin".into(),
         "-hide_banner".into(),
         "-loglevel".into(),
         "error".into(),
-        "-y".into(),
         "-f".into(),
         "lavfi".into(),
         "-i".into(),
-        format!(
-            "testsrc2=size=1280x720:rate={DEMO_FPS}:duration={DEMO_DURATION_S}"
-        ),
+        format!("testsrc2=size=1280x720:rate=30:duration={}", DEMO_DURATION_US / 1_000_000),
         "-f".into(),
         "lavfi".into(),
         "-i".into(),
-        format!(
-            "sine=frequency={DEMO_BEEP_HZ}:duration={DEMO_DURATION_S}:sample_rate=48000"
-        ),
-        // Flash a white frame for 200 ms at the known mark, so alignment can
-        // be checked by eye as well as by the offset field.
+        "sine=frequency=440:sample_rate=48000:duration=8".into(),
         "-vf".into(),
-        format!(
-            "drawbox=x=0:y=0:w=iw:h=ih:color=white@1.0:t=fill:enable='between(t,{:.3},{:.3})',format=yuv420p",
-            (DEMO_SOURCE_FLASH_MS as f32) / 1000.0,
-            (DEMO_SOURCE_FLASH_MS as f32 + 200.0) / 1000.0
-        ),
+        // A white flash on the first 200 ms: the alignment landmark.
+        "drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='lt(t,0.2)'".into(),
         "-c:v".into(),
         "libx264".into(),
         "-preset".into(),
         "veryfast".into(),
-        "-crf".into(),
-        "20".into(),
         "-pix_fmt".into(),
         "yuv420p".into(),
         "-c:a".into(),
@@ -121,40 +118,36 @@ pub fn source_args(path: &Path) -> Vec<String> {
         "-shortest".into(),
         "-movflags".into(),
         "+faststart".into(),
-        path.to_string_lossy().to_string(),
+        output.display().to_string(),
     ]
 }
 
-/// The exact `ffmpeg` arguments for the reaction clip.
-pub fn reaction_args(path: &Path) -> Vec<String> {
-    let flash_start = (DEMO_REACTION_FLASH_MS as f32) / 1000.0;
-    let flash_end = (DEMO_REACTION_FLASH_MS as f32 + 200.0) / 1000.0;
+/// The ffmpeg arguments for the reaction clip: same length, flash 1500 ms in.
+pub fn reaction_args(output: &Path) -> Vec<String> {
     vec![
+        "-y".into(),
+        "-nostdin".into(),
         "-hide_banner".into(),
         "-loglevel".into(),
         "error".into(),
-        "-y".into(),
         "-f".into(),
         "lavfi".into(),
         "-i".into(),
-        format!("color=c=0x101014:size=960x540:rate={DEMO_FPS}:duration={DEMO_DURATION_S}"),
+        format!("color=c=0x0A0A0A:size=1280x720:rate=30:duration={}", DEMO_DURATION_US / 1_000_000),
         "-f".into(),
         "lavfi".into(),
         "-i".into(),
-        format!(
-            "sine=frequency={DEMO_BEEP_HZ}:duration={DEMO_DURATION_S}:sample_rate=48000"
-        ),
-        // Accent-coloured flash exactly 1500 ms after the source's flash.
+        "sine=frequency=880:sample_rate=48000:duration=8".into(),
         "-vf".into(),
         format!(
-            "drawbox=x=0:y=0:w=iw:h=ih:color=0xFACC15@1.0:t=fill:enable='between(t,{flash_start:.3},{flash_end:.3})',format=yuv420p"
+            "drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='between(t,{}, {})'",
+            DEMO_FLASH_US as f64 / 1_000_000.0,
+            DEMO_FLASH_US as f64 / 1_000_000.0 + 0.2
         ),
         "-c:v".into(),
         "libx264".into(),
         "-preset".into(),
         "veryfast".into(),
-        "-crf".into(),
-        "20".into(),
         "-pix_fmt".into(),
         "yuv420p".into(),
         "-c:a".into(),
@@ -164,72 +157,92 @@ pub fn reaction_args(path: &Path) -> Vec<String> {
         "-shortest".into(),
         "-movflags".into(),
         "+faststart".into(),
-        path.to_string_lossy().to_string(),
+        output.display().to_string(),
     ]
 }
 
-/// True when `ffmpeg` can be executed from `PATH`.
-pub fn ffmpeg_available() -> bool {
-    Command::new("ffmpeg")
-        .arg("-version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+fn warn_if_ffmpeg_missing() -> Result<(), String> {
+    match Command::new("ffmpeg").arg("-version").output() {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(_) => Err(
+            "ffmpeg is installed but would not run; install the `ffmpeg` package and try again"
+                .to_owned(),
+        ),
+        Err(error) => Err(format!(
+            "the demo needs ffmpeg on PATH to generate its clips ({error}). \
+             Install it with `sudo pacman -S ffmpeg` on Arch, `brew install ffmpeg` on macOS, \
+             or `choco install ffmpeg` on Windows, then press Demo again."
+        )),
+    }
 }
 
-/// Create both demo clips in `dir` if they are missing.
-///
-/// Returns the resolved paths. Errors are actionable: they name `ffmpeg`, say
-/// how to install it, and fall back to describing the shell script.
-pub fn ensure_demo_media(dir: &Path) -> AppResult<DemoMedia> {
-    let media = DemoMedia::paths_in(dir);
-    if media.exists() {
-        return Ok(media);
+fn run_ffmpeg(args: &[String]) -> Result<(), String> {
+    let output = Command::new("ffmpeg")
+        .args(args)
+        .output()
+        .map_err(|e| format!("could not run ffmpeg: {e}"))?;
+    if output.status.success() {
+        return Ok(());
     }
-    std::fs::create_dir_all(dir)
-        .map_err(|e| AppError::new(format!("Could not create {}: {e}", dir.display())))?;
-
-    if !ffmpeg_available() {
-        return Err(AppError::new(format!(
-            "ffmpeg is required to generate the demo clips but was not found on PATH. \
-             Install it (Arch: `sudo pacman -S ffmpeg`), or run \
-             `scripts/make-demo-clips.sh` yourself and place the files in {}.",
-            dir.display()
-        )));
-    }
-
-    if !is_nonempty(&media.source) {
-        run_ffmpeg(&source_args(&media.source), "source clip")?;
-    }
-    if !is_nonempty(&media.reaction) {
-        run_ffmpeg(&reaction_args(&media.reaction), "reaction clip")?;
-    }
-    Ok(media)
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let tail: String = stderr
+        .lines()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join(" | ");
+    Err(format!("ffmpeg failed: {tail}"))
 }
 
-fn run_ffmpeg(args: &[String], what: &str) -> AppResult<()> {
-    let output = Command::new("ffmpeg").args(args).output().map_err(|e| {
-        AppError::new(format!("Could not run ffmpeg for the demo {what}: {e}"))
-    })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail: String = stderr
-            .lines()
-            .rev()
-            .take(8)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(AppError::new(format!(
-            "ffmpeg failed while generating the demo {what} (exit {:?}):\n{tail}",
-            output.status.code()
-        )));
-    }
-    Ok(())
+/// Build the demo session: the source full-frame underneath, the reaction as a
+/// picture-in-picture inset on top, pre-offset by the flash.
+pub fn build_session(clips: &DemoClips) -> Session {
+    let mut session = Session::new("Demo - flash alignment");
+    let rects = layout_rects(LayoutType::PipSourceOverReaction, 2);
+    let z = layout_z(LayoutType::PipSourceOverReaction, 2);
+    let mut source = crate::model::session::Layer::new(
+        "Source",
+        Role::Source,
+        MediaSource::file(clips.source.clone()),
+        rects.first().copied().unwrap_or(NormRect::FULL),
+        z.first().copied().unwrap_or(0),
+    );
+    source.duration_us = DEMO_DURATION_US;
+    source.fps_num = 30;
+    source.fps_den = 1;
+    source.has_audio = true;
+    source.width = 1280;
+    source.height = 720;
+    source.audio_rate = 48_000;
+    source.audio_channels = 2;
+
+    let mut reaction = crate::model::session::Layer::new(
+        "Reaction 1",
+        Role::Reaction,
+        MediaSource::file(clips.reaction.clone()),
+        rects.get(1).copied().unwrap_or(NormRect::FULL),
+        z.get(1).copied().unwrap_or(1),
+    );
+    reaction.duration_us = DEMO_DURATION_US;
+    reaction.fps_num = 30;
+    reaction.fps_den = 1;
+    reaction.has_audio = true;
+    reaction.width = 1280;
+    reaction.height = 720;
+    reaction.audio_rate = 48_000;
+    reaction.audio_channels = 2;
+    // The flash is 1500 ms later in the reaction clip; the offset lines the two
+    // flashes up on the union timeline.
+    reaction.offset_us = DEMO_FLASH_US;
+
+    session.master_audio = Some(source.id.clone());
+    session.layers.push(source);
+    session.layers.push(reaction);
+    session.normalize_z();
+    session
 }
 
 #[cfg(test)]
@@ -237,81 +250,67 @@ mod tests {
     use super::*;
 
     #[test]
-    fn offset_matches_the_flash_difference() {
-        // The demo relies on these two numbers being 1500 ms apart; if one
-        // changes without the other, the offsets stop describing the media.
+    fn paths_live_under_the_demo_directory() {
+        let clips = clips(Path::new("/tmp/rp"));
+        assert_eq!(clips.source, Path::new("/tmp/rp/demo/source.mp4"));
+        assert_eq!(clips.reaction, Path::new("/tmp/rp/demo/reaction.mp4"));
+        assert_eq!(clips.dir(), Some(Path::new("/tmp/rp/demo")));
+        assert!(!clips.exist());
+    }
+
+    #[test]
+    fn ffmpeg_commands_carry_the_landmark() {
+        let source = source_args(Path::new("/tmp/source.mp4"));
+        assert!(source.iter().any(|arg| arg.contains("testsrc2")));
+        assert!(source
+            .iter()
+            .any(|arg| arg.contains("enable='lt(t,0.2)'")));
+        assert_eq!(source.last().map(String::as_str), Some("/tmp/source.mp4"));
+
+        let reaction = reaction_args(Path::new("/tmp/reaction.mp4"));
+        assert!(reaction.iter().any(|arg| arg == "color=c=0x0A0A0A:size=1280x720:rate=30:duration=8"));
+        assert!(reaction
+            .iter()
+            .any(|arg| arg.contains("between(t,1.5, 1.7)")));
+    }
+
+    #[test]
+    fn demo_session_offsets_the_reaction_by_the_flash() {
+        let clips = clips(Path::new("/tmp/rp"));
+        let session = build_session(&clips);
+        assert_eq!(session.layers.len(), 2);
+        assert_eq!(session.layers[0].role, Role::Source);
+        assert_eq!(session.layers[1].role, Role::Reaction);
+        assert_eq!(session.layers[1].offset_us, DEMO_FLASH_US);
+        assert_eq!(session.layers[0].offset_us, 0);
+        // Union starts where the reaction's footage starts, i.e. -1.5 s.
+        let union = session.union();
+        assert_eq!(union.start_us, -DEMO_FLASH_US);
+        assert_eq!(union.end_us, DEMO_DURATION_US);
+        // The source is the master, so its sound carries the demo.
         assert_eq!(
-            DEMO_REACTION_FLASH_MS as i64 - DEMO_SOURCE_FLASH_MS as i64,
-            DEMO_REACTION_OFFSET_US / 1000
+            session.master_audio.as_deref(),
+            Some(session.layers[0].id.as_str())
         );
-        assert_eq!(DEMO_REACTION_OFFSET_US, 1_500_000);
+        // The inset does not cover the whole canvas.
+        assert!(session.layers[1].rect.w < 1.0);
+        assert_eq!(session.z_of(&session.layers[1].id), Some(1));
     }
 
     #[test]
-    fn paths_live_in_the_given_dir() {
-        let media = DemoMedia::paths_in(Path::new("/tmp/demo"));
-        assert_eq!(media.source, PathBuf::from("/tmp/demo/source-testsrc2.mp4"));
-        assert_eq!(media.reaction, PathBuf::from("/tmp/demo/reaction-flash.mp4"));
-        assert!(!media.exists());
+    fn missing_clips_are_not_ready() {
+        assert!(!is_ready(Path::new("/definitely/not/here")));
     }
 
     #[test]
-    fn duration_is_ten_seconds() {
-        assert_eq!(DemoMedia::duration_us(), 10_000_000);
-    }
-
-    #[test]
-    fn source_args_describe_a_playable_clip() {
-        let args = source_args(Path::new("/tmp/source.mp4"));
-        let joined = args.join(" ");
-        assert!(joined.contains("testsrc2=size=1280x720"));
-        assert!(joined.contains("sine=frequency=1000"));
-        assert!(joined.contains("between(t,1.500,1.700)"));
-        assert_eq!(args.last().unwrap(), "/tmp/source.mp4");
-        assert!(joined.contains("-pix_fmt yuv420p"));
-    }
-
-    #[test]
-    fn reaction_args_flash_later() {
-        let args = reaction_args(Path::new("/tmp/reaction.mp4"));
-        let joined = args.join(" ");
-        assert!(joined.contains("color=c=0x101014"));
-        assert!(joined.contains("between(t,3.000,3.200)"));
-        assert!(joined.contains("0xFACC15"));
-        assert_eq!(args.last().unwrap(), "/tmp/reaction.mp4");
-    }
-
-    #[test]
-    fn demo_clips_are_not_reported_when_absent() {
-        let dir = std::env::temp_dir().join("reaction-player-demo-test-absent");
+    fn a_zero_length_file_is_not_a_clip() {
+        let dir = std::env::temp_dir().join("reaction-player-demo-test");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("source.mp4");
+        std::fs::write(&path, b"").expect("write");
+        assert!(!is_clip(&path));
+        std::fs::write(&path, b"x").expect("write");
+        assert!(is_clip(&path));
         let _ = std::fs::remove_dir_all(&dir);
-        let media = DemoMedia::paths_in(&dir);
-        assert!(!media.exists());
-    }
-
-    #[test]
-    fn existing_files_short_circuit_generation() {
-        let dir = std::env::temp_dir().join("reaction-player-demo-test-present");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let media = DemoMedia::paths_in(&dir);
-        std::fs::write(&media.source, b"x").unwrap();
-        std::fs::write(&media.reaction, b"y").unwrap();
-        let resolved = ensure_demo_media(&dir).unwrap();
-        assert_eq!(resolved, media);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn missing_ffmpeg_produces_an_actionable_error() {
-        if ffmpeg_available() {
-            // On machines that do have ffmpeg we cannot exercise this path.
-            return;
-        }
-        let dir = std::env::temp_dir().join("reaction-player-demo-test-noffmpeg");
-        let _ = std::fs::remove_dir_all(&dir);
-        let err = ensure_demo_media(&dir).unwrap_err().to_string();
-        assert!(err.contains("ffmpeg"));
-        assert!(err.contains("make-demo-clips.sh"));
     }
 }

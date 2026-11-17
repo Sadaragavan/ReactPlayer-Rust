@@ -262,6 +262,15 @@ impl TrackShared {
         self.history.lock().ok()?.front().cloned()
     }
 
+    /// A copy of the decoded history, oldest first. The studio keeps the last
+    /// eight of these so a capture point can be re-examined frame by frame.
+    pub fn history_snapshot(&self) -> Vec<Arc<VideoFrame>> {
+        self.history
+            .lock()
+            .map(|history| history.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
     pub fn history_len(&self) -> usize {
         self.history.lock().map(|h| h.len()).unwrap_or(0)
     }
@@ -279,7 +288,7 @@ impl TrackShared {
         }
     }
 
-    fn clear_history(&self) {
+    pub fn clear_history(&self) {
         if let Ok(mut history) = self.history.lock() {
             history.clear();
         }
@@ -368,6 +377,16 @@ impl Track {
     pub fn send(&self, command: Command) {
         for sender in &self.senders {
             let _ = sender.send(command);
+        }
+    }
+
+    /// Send without ever blocking the caller; rate changes are dropped when a
+    /// worker is busy rather than stalling a frame.
+    pub fn try_send(&self, command: Command) {
+        for sender in &self.senders {
+            if let Err(TrySendError::Disconnected(_)) = sender.try_send(command) {
+                break;
+            }
         }
     }
 

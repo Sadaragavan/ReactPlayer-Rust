@@ -1,415 +1,231 @@
-//! Small, reusable widgets used by every screen.
+//! The small vocabulary the screens are written in: flat square buttons, one
+//! primary action per view, chips for choices, hairlines instead of boxes.
 //!
-//! Every widget in this module is deliberately flat: 1 px borders, no corner
-//! radius, no shadows, one accent colour. Anything that needs a look other
-//! than the theme's gets it here and nowhere else.
+//! Every widget here takes the theme's colours from [`theme`], so a screen never
+//! names a colour. Nothing has a shadow, a radius or a gradient.
 
 use eframe::egui::{
-    self, Align, CornerRadius, Layout, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
+    self, Align, Button, Color32, Layout, Response, RichText, Sense, Stroke, Ui, Vec2,
 };
 
-use crate::ui::theme;
+use super::theme::{self, ACCENT, BG, DANGER, FILL_ACTIVE, FILL_HOVER, LINE, LINE_STRONG, MUTED, TEXT};
 
-/// The theme's corner radius: always zero (square corners everywhere).
-pub const RADIUS: CornerRadius = CornerRadius::ZERO;
+/// The fill of a primary button: the accent, with black text on it.
+fn primary_button(text: &str) -> Button<'_> {
+    Button::new(RichText::new(text).color(BG).size(13.0))
+        .fill(ACCENT)
+        .stroke(Stroke::new(1.0, ACCENT))
+        .corner_radius(theme::RADIUS)
+        .min_size(Vec2::new(0.0, 30.0))
+}
 
-/// Fill for an ordinary button.
-pub fn button(u: &mut Ui, text: impl Into<String>) -> Response {
-    let text: String = text.into();
-    let galley = u.painter().layout_no_wrap(
-        text.clone(),
-        egui::FontId::proportional(13.0),
-        theme::TEXT,
-    );
-    let size = Vec2::new(galley.size().x + 24.0, 30.0);
-    let (rect, response) = u.allocate_exact_size(size, Sense::click());
-    let hovered = response.hovered();
-    let pressed = response.is_pointer_button_down_on();
-    let bg = if pressed {
-        theme::SURFACE_RAISED
-    } else if hovered {
-        theme::SURFACE_HOVER
+fn secondary_button(text: &str) -> Button<'_> {
+    Button::new(RichText::new(text).color(TEXT).size(13.0))
+        .fill(BG)
+        .stroke(theme::hairline(LINE))
+        .corner_radius(theme::RADIUS)
+        .min_size(Vec2::new(0.0, 30.0))
+}
+
+fn ghost_button(text: &str) -> Button<'_> {
+    Button::new(RichText::new(text).color(MUTED).size(12.5))
+        .fill(Color32::TRANSPARENT)
+        .stroke(Stroke::NONE)
+        .corner_radius(theme::RADIUS)
+        .min_size(Vec2::new(0.0, 26.0))
+}
+
+fn danger_button(text: &str) -> Button<'_> {
+    Button::new(RichText::new(text).color(DANGER).size(13.0))
+        .fill(BG)
+        .stroke(theme::hairline(DANGER))
+        .corner_radius(theme::RADIUS)
+        .min_size(Vec2::new(0.0, 30.0))
+}
+
+/// The one action a view exists for.
+pub fn primary(ui: &mut Ui, text: &str) -> Response {
+    ui.add(primary_button(text))
+}
+
+/// Everything next to the primary action.
+pub fn secondary(ui: &mut Ui, text: &str) -> Response {
+    ui.add(secondary_button(text))
+}
+
+/// Quiet, inline actions: "Reset", "Change".
+pub fn ghost(ui: &mut Ui, text: &str) -> Response {
+    ui.add(ghost_button(text))
+}
+
+/// Destructive actions, always after a confirmation.
+pub fn danger(ui: &mut Ui, text: &str) -> Response {
+    ui.add(danger_button(text))
+}
+
+/// A full-width row that behaves like a button, for lists and cards.
+pub fn row(ui: &mut Ui, selected: bool, add: impl FnOnce(&mut Ui)) -> Response {
+    let fill = if selected { FILL_ACTIVE } else { BG };
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(theme::hairline(if selected { ACCENT } else { LINE }))
+        .corner_radius(theme::RADIUS)
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        })
+        .response
+}
+
+/// A toggle: 1px border, accent when on. Used for layout choices, fit modes and
+/// every other either-or.
+pub fn chip(ui: &mut Ui, on: bool, text: &str) -> Response {
+    let (fill, stroke, colour) = if on {
+        (FILL_ACTIVE, Stroke::new(1.0, ACCENT), TEXT)
     } else {
-        theme::SURFACE
+        (BG, theme::hairline(LINE), MUTED)
     };
-    u.painter().rect_filled(rect, RADIUS, bg);
-    u.painter().rect_stroke(
-        rect,
-        RADIUS,
-        Stroke::new(1.0, if hovered { theme::TEXT_DIM } else { theme::BORDER }),
-        StrokeKind::Inside,
-    );
-    // Third argument is the fallback color used when the galley carries no
-    // per-section colors; ours always does, so the value is inert.
-    u.painter()
-        .galley(rect.center() - galley.size() * 0.5, galley, theme::TEXT);
-    response
+    ui.add(
+        Button::new(RichText::new(text).color(colour).size(12.0))
+            .fill(fill)
+            .stroke(stroke)
+            .corner_radius(theme::RADIUS)
+            .min_size(Vec2::new(0.0, 26.0)),
+    )
 }
 
-/// The accent (primary action) button: filled `#FACC15`, black label.
-pub fn accent_button(u: &mut Ui, text: impl Into<String>) -> Response {
-    let text: String = text.into();
-    let galley = u.painter().layout_no_wrap(
-        text.clone(),
-        egui::FontId::proportional(13.0),
-        theme::TEXT,
-    );
-    let size = Vec2::new(galley.size().x + 28.0, 30.0);
-    let (rect, response) = u.allocate_exact_size(size, Sense::click());
-    let hovered = response.hovered();
-    let pressed = response.is_pointer_button_down_on();
-    let fill = if pressed {
-        theme::ACCENT_DARK
-    } else if hovered {
-        theme::ACCENT_LIGHT
+/// A small caption with a hairline border; used for hardware badges and counts.
+pub fn badge(ui: &mut Ui, text: &str, accent: bool) -> Response {
+    let colour = if accent { ACCENT } else { MUTED };
+    let stroke = if accent {
+        Stroke::new(1.0, ACCENT)
     } else {
-        theme::ACCENT
+        theme::hairline(LINE)
     };
-    u.painter().rect_filled(rect, RADIUS, fill);
-    u.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        text,
-        egui::FontId::proportional(13.0),
-        theme::BG,
-    );
-    response
+    egui::Frame::new()
+        .fill(BG)
+        .stroke(stroke)
+        .corner_radius(theme::RADIUS)
+        .inner_margin(egui::Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.label(RichText::new(text).color(colour).size(10.5));
+        })
+        .response
 }
 
-/// A destructive button: red outline, red label.
-pub fn danger_button(u: &mut Ui, text: impl Into<String>) -> Response {
-    let text: String = text.into();
-    let galley = u.painter().layout_no_wrap(
-        text.clone(),
-        egui::FontId::proportional(13.0),
-        theme::TEXT,
-    );
-    let size = Vec2::new(galley.size().x + 24.0, 30.0);
-    let (rect, response) = u.allocate_exact_size(size, Sense::click());
-    let hovered = response.hovered();
-    u.painter().rect_filled(
-        rect,
-        RADIUS,
-        if hovered {
-            theme::ERROR_DIM
-        } else {
-            theme::SURFACE
-        },
-    );
-    u.painter().rect_stroke(
-        rect,
-        RADIUS,
-        Stroke::new(1.0, theme::ERROR),
-        StrokeKind::Inside,
-    );
-    u.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        text,
-        egui::FontId::proportional(13.0),
-        theme::ERROR,
-    );
-    response
+/// A heading with a hairline underneath, the only structural separator used.
+pub fn section(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
+    ui.label(RichText::new(title).color(TEXT).size(15.0).strong());
+    ui.add_space(2.0);
+    hairline(ui);
+    ui.add_space(8.0);
+    add(ui);
+    ui.add_space(10.0);
 }
 
-/// A small chip / badge with an optional accent outline.
-pub fn badge(u: &mut Ui, text: impl Into<String>, accent: bool) -> Response {
-    let text: String = text.into();
-    let galley = u.painter().layout_no_wrap(
-        text.clone(),
-        egui::FontId::monospace(11.0),
-        theme::TEXT,
-    );
-    let size = Vec2::new(galley.size().x + 14.0, 20.0);
-    let (rect, response) = u.allocate_exact_size(size, Sense::hover());
-    u.painter().rect_filled(rect, RADIUS, theme::SURFACE);
-    u.painter().rect_stroke(
-        rect,
-        RADIUS,
-        Stroke::new(
-            1.0,
-            if accent { theme::ACCENT } else { theme::BORDER },
-        ),
-        StrokeKind::Inside,
-    );
-    u.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        text,
-        egui::FontId::monospace(11.0),
-        if accent { theme::ACCENT } else { theme::TEXT_DIM },
-    );
-    response
+/// A 1px rule across the available width.
+pub fn hairline(ui: &mut Ui) {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), Sense::hover());
+    ui.painter()
+        .hline(rect.x_range(), rect.center().y, theme::hairline(LINE));
 }
 
-/// A section heading: uppercase, dim, letter-spaced by hand.
-pub fn section_label(u: &mut Ui, text: &str) {
-    u.add_space(2.0);
-    u.label(
-        RichText::new(text.to_uppercase())
-            .size(10.0)
-            .color(theme::TEXT_DIM)
-            .strong(),
-    );
-    u.add_space(2.0);
+/// A key on the left, its value on the right, both on one line.
+pub fn kv(ui: &mut Ui, key: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(key).color(MUTED).size(12.0));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(RichText::new(value).color(TEXT).size(12.0));
+        });
+    });
 }
 
-/// A 1 px horizontal rule.
-pub fn rule(u: &mut Ui) {
-    let (rect, _) = u.allocate_exact_size(Vec2::new(u.available_width(), 1.0), Sense::hover());
-    u.painter()
-        .rect_filled(rect, RADIUS, theme::BORDER);
-}
-
-/// A toggle rendered as a small square with a filled inner square when on.
-pub fn checkbox(u: &mut Ui, on: &mut bool, label: &str) -> Response {
-    let size = Vec2::new(u.available_width(), 22.0);
-    let (rect, response) = u.allocate_exact_size(size, Sense::click());
-    if response.clicked() {
-        *on = !*on;
-    }
-    let box_rect = egui::Rect::from_min_size(
-        egui::pos2(rect.left(), rect.center().y - 7.0),
-        Vec2::splat(14.0),
-    );
-    u.painter().rect_filled(box_rect, RADIUS, theme::SURFACE);
-    u.painter().rect_stroke(
-        box_rect,
-        RADIUS,
-        Stroke::new(1.0, if *on { theme::ACCENT } else { theme::BORDER }),
-        StrokeKind::Inside,
-    );
-    if *on {
-        u.painter().rect_filled(
-            box_rect.shrink(4.0),
-            RADIUS,
-            theme::ACCENT,
-        );
-    }
-    u.painter().text(
-        egui::pos2(box_rect.right() + 8.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(13.0),
-        if response.hovered() {
-            theme::TEXT
-        } else {
-            theme::TEXT_DIM
-        },
-    );
-    response
-}
-
-/// A one-line text field with a dim label above it.
-pub fn labelled_text(
-    u: &mut Ui,
-    id: egui::Id,
+/// A label above a slider, with the value on the right.
+pub fn slider(
+    ui: &mut Ui,
     label: &str,
-    value: &mut String,
-    hint: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
 ) -> Response {
-    u.label(
-        RichText::new(label)
-            .size(11.0)
-            .color(theme::TEXT_DIM),
-    );
-    let response = u.add(
-        egui::TextEdit::singleline(value)
-            .id(id)
-            .hint_text(hint)
-            .desired_width(f32::INFINITY)
-            .font(egui::TextStyle::Body),
-    );
-    response
-}
-
-/// A dim secondary line of text.
-pub fn dim(u: &mut Ui, text: impl Into<String>) {
-    u.label(
-        RichText::new(text.into())
-            .size(11.0)
-            .color(theme::TEXT_DIM),
-    );
-}
-
-/// A monospaced value shown right-aligned in a fixed-width slot.
-pub fn value_slot(u: &mut Ui, text: &str, width: f32) {
-    let (rect, _) = u.allocate_exact_size(Vec2::new(width, 18.0), Sense::hover());
-    u.painter().text(
-        rect.right_center(),
-        egui::Align2::RIGHT_CENTER,
-        text,
-        egui::FontId::monospace(12.0),
-        theme::TEXT,
-    );
-}
-
-/// A horizontal row of equal-width items.
-pub fn row<R>(u: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
-    // `with_layout` wraps the closure's value in an `InnerResponse`.
-    u.with_layout(Layout::left_to_right(Align::Center), add)
-        .inner
-}
-
-/// A spinner-free "working" indicator: three dim dots.
-pub fn working(u: &mut Ui, what: &str) {
-    u.horizontal(|ui| {
-        let color = theme::ACCENT;
-        for i in 0..3 {
-            // `u` is already mutably borrowed by `ui.horizontal`, so read
-            // frame time from `ui` here.
-            let t = ui.input(|i| i.time) as f32;
-            let phase = ((t * 2.0 + i as f32 * 0.3).sin() * 0.5 + 0.5) * 0.8 + 0.2;
-            let (rect, _) = ui.allocate_exact_size(Vec2::splat(4.0), Sense::hover());
-            ui.painter()
-                .rect_filled(rect, RADIUS, color.gamma_multiply(phase));
-        }
-        ui.label(RichText::new(what).size(11.0).color(theme::TEXT_DIM));
-    });
-}
-
-/// A square icon-only toggle button.
-pub fn icon_toggle(u: &mut Ui, glyph: &str, active: bool, tooltip: &str) -> bool {
-    let (rect, response) = u.allocate_exact_size(Vec2::splat(26.0), Sense::click());
-    let hovered = response.hovered();
-    let fg = if active {
-        theme::ACCENT
-    } else if hovered {
-        theme::TEXT
-    } else {
-        theme::TEXT_DIM
-    };
-    if active {
-        u.painter().rect_filled(rect, RADIUS, theme::SURFACE);
-    }
-    if hovered {
-        u.painter().rect_stroke(
-            rect,
-            RADIUS,
-            Stroke::new(1.0, theme::BORDER),
-            StrokeKind::Inside,
-        );
-    }
-    u.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        egui::FontId::proportional(14.0),
-        fg,
-    );
-    if !tooltip.is_empty() {
-        response.clone().on_hover_text(tooltip);
-    }
-    response.clicked()
-}
-
-/// A compact numeric stepper: "−  value  +".
-///
-/// Returns `Some(-1)` for the minus button, `Some(1)` for plus, else `None`.
-pub fn stepper(u: &mut Ui, value: &str, width: f32) -> Option<i32> {
-    let mut clicked = None;
-    u.horizontal(|ui| {
-        if mini_button(ui, "−") {
-            clicked = Some(-1);
-        }
-        value_slot(ui, value, width);
-        if mini_button(ui, "+") {
-            clicked = Some(1);
-        }
-    });
-    clicked
-}
-
-/// A 20x20 bare glyph button.
-pub fn mini_button(u: &mut Ui, glyph: &str) -> bool {
-    let (rect, response) = u.allocate_exact_size(Vec2::splat(20.0), Sense::click());
-    let color = if response.hovered() {
-        theme::ACCENT
-    } else {
-        theme::TEXT_DIM
-    };
-    u.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        egui::FontId::monospace(13.0),
-        color,
-    );
-    response.clicked()
-}
-
-/// A clickable dim text label used as a lightweight button.
-pub fn mini_label(u: &mut Ui, text: &str) -> bool {
-    let response = u.add(
-        egui::Label::new(
-            RichText::new(text)
-                .size(11.5)
-                .color(theme::TEXT_DIM),
-        )
-        .sense(Sense::click()),
-    );
-    if response.hovered() {
-        u.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    response.clicked()
-}
-
-/// A small pill used for picking one of a few options; accent when selected.
-pub fn chip(u: &mut Ui, text: &str, selected: bool) -> bool {
-    let galley = u.painter().layout_no_wrap(
-        text.to_string(),
-        egui::FontId::proportional(11.5),
-        theme::TEXT,
-    );
-    let size = Vec2::new(galley.size().x + 16.0, 22.0);
-    let (rect, response) = u.allocate_exact_size(size, Sense::click());
-    let (bg, border, fg) = if selected {
-        (theme::ACCENT, theme::ACCENT, theme::BG)
-    } else if response.hovered() {
-        (theme::SURFACE_HOVER, theme::TEXT_DIM, theme::TEXT)
-    } else {
-        (theme::SURFACE, theme::BORDER, theme::TEXT_DIM)
-    };
-    u.painter().rect_filled(rect, RADIUS, bg);
-    u.painter()
-        .rect_stroke(rect, RADIUS, Stroke::new(1.0, border), StrokeKind::Inside);
-    u.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        text,
-        egui::FontId::proportional(11.5),
-        fg,
-    );
-    response.clicked()
-}
-
-/// A selectable list row: accent left bar when selected.
-pub fn selectable_row(u: &mut Ui, selected: bool, height: f32, add: impl FnOnce(&mut Ui)) -> egui::Response {
-    let (rect, response) = u.allocate_exact_size(
-        Vec2::new(u.available_width(), height),
-        Sense::click(),
-    );
-    if selected || response.hovered() {
-        u.painter().rect_filled(
-            rect,
-            RADIUS,
-            if selected {
-                theme::SURFACE_HOVER
+    let mut response = None;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).color(MUTED).size(12.0));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let text = if suffix.is_empty() {
+                format!("{value:.2}")
             } else {
-                theme::SURFACE
-            },
-        );
-    }
+                format!("{value:.2}{suffix}")
+            };
+            ui.label(RichText::new(text).color(TEXT).size(12.0));
+            response = Some(ui.add(egui::Slider::new(value, range).show_value(false)));
+        });
+    });
+    response.unwrap_or_else(|| ui.label(""))
+}
+
+/// A slider over 0..1, for opacity, wipe position and crop edges.
+pub fn percent(ui: &mut Ui, label: &str, value: &mut f32) -> Response {
+    slider(ui, label, value, 0.0..=1.0, "")
+}
+
+/// A single-line text field that fills the width.
+pub fn text_edit(ui: &mut Ui, value: &mut String, hint: &str) -> Response {
+    ui.add(
+        egui::TextEdit::singleline(value)
+            .hint_text(hint)
+            .margin(Vec2::new(8.0, 6.0)),
+    )
+}
+
+/// The display name of a media file, for lists.
+pub fn file_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// Pad a hover area so a click target is comfortable without changing layout.
+pub fn clickable(ui: &mut Ui, size: Vec2) -> Response {
+    ui.allocate_response(size, Sense::click())
+}
+
+/// Format a duration as `m:ss.mmm` for transport readouts.
+pub fn timecode(us: i64) -> String {
+    let total_ms = (us.max(0) / 1_000) as u64;
+    let minutes = total_ms / 60_000;
+    let seconds = (total_ms % 60_000) / 1_000;
+    let millis = total_ms % 1_000;
+    format!("{minutes}:{seconds:02}.{millis:03}")
+}
+
+/// Format a signed offset as `+1.500s`.
+pub fn offset(us: i64) -> String {
+    let sign = if us < 0 { '-' } else { '+' };
+    let abs = us.abs();
+    format!("{sign}{}.{:03}s", abs / 1_000_000, (abs % 1_000_000) / 1_000)
+}
+
+/// The hover fill for a list row, exposed so screens can paint their own rows.
+pub fn hover_fill(hovered: bool, selected: bool) -> Color32 {
     if selected {
-        u.painter().vline(
-            rect.left() + 1.5,
-            rect.y_range(),
-            Stroke::new(3.0, theme::ACCENT),
-        );
+        FILL_ACTIVE
+    } else if hovered {
+        FILL_HOVER
+    } else {
+        BG
     }
-    let mut content = u.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(10.0, 4.0))));
-    add(&mut content);
-    response
+}
+
+/// The border colour a row should use.
+pub fn row_border(selected: bool) -> Stroke {
+    if selected {
+        Stroke::new(1.0, ACCENT)
+    } else {
+        theme::hairline(LINE_STRONG)
+    }
 }
 
 #[cfg(test)]
@@ -417,34 +233,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn radius_is_zero_everywhere() {
-        // The aesthetic calls for hard edges; a non-zero radius here would
-        // leak into every widget.
-        assert_eq!(RADIUS, CornerRadius::ZERO);
-        assert_eq!(RADIUS.nw, 0);
-        assert_eq!(RADIUS.se, 0);
+    fn timecode_formats_milli_seconds() {
+        assert_eq!(timecode(0), "0:00.000");
+        assert_eq!(timecode(1_500_000), "0:01.500");
+        assert_eq!(timecode(65_432_000), "1:05.432");
+        assert_eq!(timecode(-5), "0:00.000");
     }
 
     #[test]
-    fn theme_has_exactly_one_accent() {
-        // Guards against a second saturated colour creeping into the theme.
-        assert_eq!(theme::ACCENT, Color32::from_rgb(0xFA, 0xCC, 0x15));
-        assert_eq!(theme::ACCENT_LIGHT.r, theme::ACCENT.r);
-        assert_eq!(theme::ACCENT_DARK.r, theme::ACCENT.r);
-        assert!(theme::ACCENT_LIGHT.g >= theme::ACCENT.g);
-        assert!(theme::ACCENT_DARK.g <= theme::ACCENT.g);
+    fn offsets_are_signed() {
+        assert_eq!(offset(1_500_000), "+1.500s");
+        assert_eq!(offset(-250_000), "-0.250s");
+        assert_eq!(offset(0), "+0.000s");
     }
 
     #[test]
-    fn text_colours_match_the_specification() {
-        assert_eq!(theme::BG, Color32::BLACK);
-        assert_eq!(theme::TEXT, Color32::WHITE);
-        assert_eq!(theme::TEXT_DIM, Color32::from_rgb(0xA1, 0xA1, 0xAA));
+    fn row_colours_follow_state() {
+        assert_eq!(hover_fill(false, false), BG);
+        assert_eq!(hover_fill(true, false), FILL_HOVER);
+        assert_eq!(hover_fill(true, true), FILL_ACTIVE);
+        assert_eq!(row_border(true).color, ACCENT);
+        assert_eq!(row_border(false).color, LINE_STRONG);
     }
 
     #[test]
-    fn destructive_colour_is_reserved_for_errors() {
-        assert_ne!(theme::ERROR, theme::ACCENT);
-        assert_eq!(theme::ERROR, Color32::from_rgb(0xF8, 0x71, 0x71));
+    fn file_names_fall_back_to_the_whole_path() {
+        assert_eq!(
+            file_name(std::path::Path::new("/videos/take 2.mp4")),
+            "take 2.mp4"
+        );
+        assert_eq!(file_name(std::path::Path::new("/")), "/");
     }
 }

@@ -1,12 +1,12 @@
 //! The runtime: everything that turns a session into pictures and sound.
 //!
 //! The app owns the [`Session`] (plain data); this owns the tracks, the audio
-//! device and the clock, and is driven once per frame from the UI thread.
-//! All the sync decisions from `model::timeline` are applied here:
+//! device and the clock, and is driven once per frame from the UI thread. All
+//! the sync decisions from `model::timeline` are applied here:
 //!
 //! * `target_pts_us = clock + offset_us` decides which frame a layer shows,
-//! * drift under 5 ms is ignored, 5..100 ms is absorbed (frames held or
-//!   dropped for picture, a rate nudge for sound) and over 100 ms seeks,
+//! * drift under 5 ms is ignored, 5..100 ms is absorbed (frames held or dropped
+//!   for picture, a rate nudge for sound) and over 100 ms seeks,
 //! * the union timeline decides where each layer starts and ends, and playback
 //!   stops when every layer is past its end.
 
@@ -14,14 +14,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::model::session::{Layer, Session};
+use crate::model::session::{now_ms, Layer, MediaSource, Session};
 use crate::model::settings::Settings;
-use crate::model::timeline::{self, DriftClass, Target, Union};
-use crate::model::session::now_ms;
+use crate::model::timeline::{self, DriftClass, Union};
 
 use super::audio::{AudioEngine, AudioSlot, AudioStatus, MAX_TRACKS};
 use super::hwaccel::HwBackend;
-use super::sync_clock::{MasterClock, MAX_INTERPOLATION_US};
+use super::sync_clock::MasterClock;
 use super::track::{Command, MediaInfo, Track, TrackConfig, TrackShared};
 use super::video_frame::VideoFrame;
 
@@ -45,8 +44,10 @@ struct LayerState {
     presented: Option<Arc<VideoFrame>>,
     /// A decoded frame that is ahead of the clock, kept for the next tick.
     pending: Option<Arc<VideoFrame>>,
-    /// Epoch of the frames currently accepted.
+    /// Epoch the accepted frames carry.
     epoch: u64,
+    /// Set when a seek was sent but no frame with the new epoch has arrived.
+    awaiting_epoch: bool,
     /// Last presented timestamp, in microseconds of the source.
     presented_us: i64,
     /// Target the last seek aimed at, so we do not re-seek every frame.
@@ -54,6 +55,11 @@ struct LayerState {
     last_seek_ms: i64,
     /// Set after a seek until drift is small again (hysteresis).
     seeking: bool,
+    /// Last rate factor sent to the audio worker.
+    last_rate: f64,
+    /// Whether the worker was last told to play, so commands only go out on a
+    /// transition instead of every tick.
+    worker_playing: bool,
     error: Option<String>,
     // Unlinked mode.
     unlinked_us: i64,
@@ -70,10 +76,13 @@ impl LayerState {
             presented: None,
             pending: None,
             epoch: 0,
+            awaiting_epoch: true,
             presented_us: 0,
-            last_seek_us: 0,
+            last_seek_us: i64::MIN,
             last_seek_ms: 0,
-            seeking: false,
+            seeking: true,
+            last_rate: 1.0,
+            worker_playing: false,
             error: None,
             unlinked_us: 0,
             unlinked_playing: false,
@@ -87,12 +96,11 @@ pub struct Runtime {
     pub clock: Arc<MasterClock>,
     audio: AudioEngine,
     layers: HashMap<String, LayerState>,
-    /// Which audio slot each layer got.
     slots: HashMap<String, usize>,
     used_slots: Vec<bool>,
     playing: bool,
-    /// The layer the UI has focused, used to pick whose sound plays when the
-    /// timelines are unlinked.
+    /// The layer the UI has focused; in unlinked mode its sound is the one that
+    /// plays.
     focused: Option<String>,
     master_volume: f32,
     device_rate: u32,
@@ -111,15 +119,15 @@ impl Runtime {
             used_slots: vec![false; MAX_TRACKS],
             playing: false,
             focused: None,
-            master_volume: settings.master_volume,
+            master_volume: 1.0,
             device_rate,
         };
         runtime.set_master_volume(settings.master_volume);
         runtime
     }
 
-    pub fn audio_status(&self) -> &AudioStatus {
-        self.audio.status()
+    pub fn audio_status(&self) -> AudioStatus {
+        *self.audio.status()
     }
 
     pub fn device_rate(&self) -> u32 {
@@ -153,7 +161,7 @@ impl Runtime {
         state
             .presented
             .clone()
-            .or_else(|| state.shared.as_ref().and_then(|s| s.history_first()))
+            .or_else(|| state.shared.as_ref().and_then(|shared| shared.history_first()))
     }
 
     pub fn presented_us(&self, layer_id: &str) -> i64 {
@@ -184,9 +192,10 @@ impl Runtime {
         state
             .error
             .clone()
-            .or_else(|| state.shared.as_ref().and_then(|s| s.error()))
+            .or_else(|| state.shared.as_ref().and_then(|shared| shared.error()))
     }
 
+    /// True until the probe lands, so the layer row can say "opening".
     pub fn is_probing(&self, layer_id: &str) -> bool {
         self.layers
             .get(layer_id)
@@ -196,12 +205,16 @@ impl Runtime {
     }
 
     /// Open tracks for new layers and close tracks for layers that are gone.
-    /// Returns any probe results that arrived, so the app can write durations,
+    /// Returns the probe results that arrived, so the app can write durations,
     /// frame rates and audio flags back into the session.
-    pub fn sync_session(&mut self, session: &Session, settings: &Settings) -> Vec<(String, MediaInfo)> {
-        let ids: Vec<String> = session.layers.iter().map(|l| l.id.clone()).collect();
+    pub fn sync_session(
+        &mut self,
+        session: &Session,
+        settings: &Settings,
+    ) -> Vec<(String, MediaInfo)> {
+        let ids: Vec<String> = session.layers.iter().map(|layer| layer.id.clone()).collect();
         self.layers.retain(|id, _| {
-            let keep = ids.contains(id);
+            let keep = ids.iter().any(|kept| kept == id);
             if !keep {
                 if let Some(slot) = self.slots.remove(id) {
                     self.used_slots[slot] = false;
@@ -218,27 +231,26 @@ impl Runtime {
                 if let (Some(index), Some(_)) = (slot_index, slot.as_ref()) {
                     self.slots.insert(layer.id.clone(), index);
                 }
-                let config = TrackConfig {
+                let track = Track::spawn(TrackConfig {
                     source: layer.source.clone(),
                     hw_accel: settings.hw_accel,
                     audio_rate: self.device_rate,
                     audio_slot: slot.clone(),
-                };
-                let track = Track::spawn(config);
+                });
                 let mut state = LayerState::new();
+                state.epoch = track.shared.epoch();
                 state.shared = Some(track.shared.clone());
                 state.slot = slot;
-                state.epoch = track.shared.epoch();
                 state.track = Some(track);
-                state.unlinked_us = 0;
                 self.layers.insert(layer.id.clone(), state);
             }
-            if let Some(state) = self.layers.get(&layer.id) {
-                if let Some(shared) = &state.shared {
-                    if let Some(info) = shared.info() {
-                        probed.push((layer.id.clone(), info));
-                    }
-                }
+            if let Some(info) = self
+                .layers
+                .get(&layer.id)
+                .and_then(|state| state.shared.as_ref())
+                .and_then(|shared| shared.info())
+            {
+                probed.push((layer.id.clone(), info));
             }
         }
         probed
@@ -272,6 +284,7 @@ impl Runtime {
 
     fn seek_layer(&mut self, layer: &Layer, master_us: i64) {
         let target = timeline::target_pts_us(master_us, layer.offset_us);
+        let epoch = self.layers.get(&layer.id).map(|state| state.epoch);
         let Some(state) = self.layers.get_mut(&layer.id) else {
             return;
         };
@@ -279,9 +292,10 @@ impl Runtime {
         state.last_seek_ms = now_ms();
         state.seeking = true;
         state.pending = None;
+        state.awaiting_epoch = true;
+        state.epoch = epoch.unwrap_or(state.epoch);
         if let Some(shared) = &state.shared {
             shared.clear_history();
-            state.epoch = shared.epoch();
         }
         if let Some(track) = &state.track {
             let clamped = timeline::clamp_pts_us(target.max(0), layer.duration_us.max(1));
@@ -312,11 +326,10 @@ impl Runtime {
         self.clock.set_playing(true);
         for layer in &session.layers {
             if let Some(state) = self.layers.get_mut(&layer.id) {
-                state.unlinked_playing = session.is_linked || self.focused.as_deref() == Some(&layer.id);
+                state.unlinked_playing = true;
                 state.unlinked_last_tick = Some(Instant::now());
-                state.seeking = true;
                 if let Some(track) = &state.track {
-                    track.send(Command::Play);
+                    track.try_send(Command::Play);
                 }
             }
         }
@@ -329,7 +342,7 @@ impl Runtime {
         for layer in &session.layers {
             if let Some(state) = self.layers.get(&layer.id) {
                 if let Some(track) = &state.track {
-                    track.send(Command::Pause);
+                    track.try_send(Command::Pause);
                 }
             }
         }
@@ -344,23 +357,83 @@ impl Runtime {
         }
     }
 
-    /// Step exact frames from the current position. While paused this uses the
-    /// decoded history for backward steps, so it is instant and never seeks to
-    /// a keyframe.
-    pub fn step(&mut self, session: &Session, settings: &Settings, steps: i64) {
+    /// Per-track transport for unlinked timelines.
+    pub fn set_unlinked_playing(&mut self, layer_id: &str, playing: bool) {
+        if let Some(state) = self.layers.get_mut(layer_id) {
+            state.unlinked_playing = playing;
+            state.unlinked_last_tick = Some(Instant::now());
+            if let Some(track) = &state.track {
+                if playing {
+                    track.try_send(Command::Play);
+                } else {
+                    track.try_send(Command::Pause);
+                }
+            }
+        }
+    }
+
+    pub fn seek_unlinked(&mut self, session: &Session, layer_id: &str, local_us: i64) {
+        let Some(layer) = session.layers.iter().find(|layer| layer.id == layer_id) else {
+            return;
+        };
+        let target = timeline::clamp_pts_us(local_us, layer.duration_us.max(1));
+        if let Some(state) = self.layers.get_mut(layer_id) {
+            state.unlinked_us = target;
+            state.unlinked_last_tick = Some(Instant::now());
+            state.pending = None;
+            state.awaiting_epoch = true;
+            if let Some(shared) = &state.shared {
+                shared.clear_history();
+            }
+            if let Some(track) = &state.track {
+                track.send(Command::Seek { target_us: target });
+            }
+        }
+    }
+
+    /// The decoded frames around a layer's current position, oldest first.
+    pub fn history(&self, layer_id: &str) -> Vec<Arc<VideoFrame>> {
+        self.layers
+            .get(layer_id)
+            .and_then(|state| state.shared.as_ref())
+            .map(|shared| shared.history_snapshot())
+            .unwrap_or_default()
+    }
+
+    /// Step a single layer while the timelines are unlinked, which is how the
+    /// alignment studio walks one side of the comparison.
+    pub fn step_unlinked(&mut self, session: &Session, layer_id: &str, steps: i64) {
+        let Some(layer) = session.layers.iter().find(|layer| layer.id == layer_id) else {
+            return;
+        };
+        let current = self
+            .layers
+            .get(layer_id)
+            .map(|state| state.unlinked_us)
+            .unwrap_or_else(|| self.presented_us(layer_id));
+        let next = timeline::step_pts_us(current, layer.frame_us(), steps, layer.duration_us.max(1));
+        self.seek_unlinked(session, layer_id, next);
+    }
+
+    /// Step exact frames. Backward steps come out of the decoded history, so
+    /// they are instant and never round to a keyframe.
+    pub fn step(&mut self, session: &Session, steps: i64) {
         if steps == 0 {
             return;
         }
-        let was_playing = self.playing;
-        if was_playing {
+        if self.playing {
             self.pause(session);
         }
+        // The focused layer (or the master) decides how long a frame is.
+        let reference = self
+            .focused
+            .as_ref()
+            .and_then(|id| session.layers.iter().find(|layer| &layer.id == id))
+            .or_else(|| session.master())
+            .or_else(|| session.layers.first());
+        let frame_us = reference.map(|layer| layer.frame_us()).unwrap_or(33_333);
+
         for layer in &session.layers {
-            let frame_us = if layer.fps_num == 0 {
-                33_333
-            } else {
-                layer.frame_us()
-            };
             let Some(state) = self.layers.get_mut(&layer.id) else {
                 continue;
             };
@@ -375,15 +448,14 @@ impl Runtime {
                 }
             }
             if let Some(track) = &state.track {
-                track.send(Command::Step { delta: steps });
+                track.try_send(Command::Step { delta: steps });
             }
         }
-        // Keep the clock in step with the pictures.
-        let position = self.clock.position_us() + steps * 33_333;
+
         let union = session.union();
+        let position = self.position_us() + steps.saturating_mul(frame_us);
         self.clock
             .set_position_us(position.clamp(union.start_us, union.end_us));
-        let _ = settings;
     }
 
     /// One frame of the app: drain queues, pick frames, keep sound in step.
@@ -394,30 +466,20 @@ impl Runtime {
         }
 
         let now_us = self.clock.position_us();
-        // The audio device is the timebase only while something is audible.
-        let any_audio = self.layers.values().any(|state| {
-            state
-                .slot
-                .as_ref()
-                .map(|slot| slot.is_active())
-                .unwrap_or(false)
-        });
-        let audio_live = self.audio.status().is_running() && any_audio && self.playing;
+        let audio_live = self.playing
+            && self.audio.status().is_running()
+            && self.layers.values().any(|state| {
+                state
+                    .slot
+                    .as_ref()
+                    .map(|slot| slot.is_active())
+                    .unwrap_or(false)
+            });
         self.clock.set_audio_live(audio_live);
 
         for layer in &session.layers {
             self.advance_layer(layer, session, now_us);
         }
-
-        // Unlinked layers run on their own clock.
-        if !session.is_linked {
-            for layer in &session.layers {
-                if let Some(state) = self.layers.get_mut(&layer.id) {
-                    state.unlinked_last_tick = Some(Instant::now());
-                }
-            }
-        }
-
         self.update_audio(session, settings);
 
         Tick {
@@ -428,142 +490,176 @@ impl Runtime {
     }
 
     fn advance_layer(&mut self, layer: &Layer, session: &Session, now_us: i64) {
-        // Where this layer wants to be.
+        let duration = layer.duration_us.max(1);
         let target = if session.is_linked {
             now_us + layer.offset_us
         } else {
-            let state = match self.layers.get_mut(&layer.id) {
-                Some(state) => state,
-                None => return,
+            // Unlinked: the layer runs on its own position, advanced here.
+            let Some(state) = self.layers.get_mut(&layer.id) else {
+                return;
             };
             let now = Instant::now();
             if state.unlinked_playing {
                 if let Some(last) = state.unlinked_last_tick {
                     let elapsed = now.saturating_duration_since(last).as_micros() as i64;
-                    state.unlinked_us = (state.unlinked_us + elapsed)
-                        .clamp(0, layer.duration_us.max(1));
+                    state.unlinked_us = (state.unlinked_us + elapsed).min(duration - 1);
                 }
             }
             state.unlinked_last_tick = Some(now);
             state.unlinked_us + layer.offset_us
         };
 
+        let playing = self.playing;
         let Some(state) = self.layers.get_mut(&layer.id) else {
             return;
         };
-        state.presented_us = state.presented_us.max(0);
+        let LayerState {
+            track,
+            shared,
+            presented,
+            pending,
+            epoch,
+            awaiting_epoch,
+            presented_us,
+            last_seek_us,
+            last_seek_ms,
+            seeking,
+            last_rate,
+            worker_playing,
+            ..
+        } = state;
 
-        let inside = target >= 0 && target < layer.duration_us.max(1);
-        if !inside {
-            // Before the start hold the first frame, after the end the last one.
-            if state.presented.is_none() {
-                state.presented = state
-                    .shared
-                    .as_ref()
-                    .and_then(|shared| shared.history_first());
+        let inside = target >= 0 && target < duration;
+        // Only decode while there is something to show; outside its footage a
+        // layer holds a frame for free.
+        let want_worker = playing && inside;
+        if *worker_playing != want_worker {
+            *worker_playing = want_worker;
+            if let Some(track) = track.as_ref() {
+                if want_worker {
+                    track.try_send(Command::Play);
+                } else {
+                    track.try_send(Command::Pause);
+                }
             }
-            if let Some(frame) = &state.presented {
-                state.presented_us = frame.pts_us;
+        }
+
+        if !inside {
+            if presented.is_none() {
+                *presented = shared.as_ref().and_then(|shared| shared.history_first());
+            }
+            if let Some(frame) = presented.as_ref() {
+                *presented_us = frame.pts_us;
             }
             return;
         }
 
         let half_frame = layer.frame_us() / 2;
-        let Some(track) = state.track.as_mut() else {
-            return;
-        };
-        let shared = state.shared.clone();
 
-        // A frame was already waiting from a previous tick.
-        if let Some(pending) = &state.pending {
-            if pending.pts_us <= target + half_frame {
-                state.presented = Some(pending.clone());
-                state.presented_us = pending.pts_us;
-                state.pending = None;
+        // A frame that was already too new for the previous tick.
+        if let Some(frame) = pending.as_ref() {
+            if frame.pts_us <= target + half_frame {
+                *presented = Some(frame.clone());
+                *presented_us = frame.pts_us;
+                *pending = None;
             }
         }
 
-        while state.pending.is_none() {
-            let Some((epoch, frame)) = track.try_frame() else {
+        let mut accept_epoch = *epoch;
+        let mut awaiting = *awaiting_epoch;
+        while pending.is_none() {
+            let Some((frame_epoch, frame)) = track.as_mut().and_then(|track| track.try_frame())
+            else {
                 break;
             };
-            if epoch != state.epoch {
+            if awaiting {
+                accept_epoch = frame_epoch;
+                awaiting = false;
+            }
+            if frame_epoch != accept_epoch {
                 // Left over from before a seek.
                 continue;
             }
             if frame.pts_us <= target + half_frame {
-                state.presented_us = frame.pts_us;
-                state.presented = Some(frame);
+                *presented_us = frame.pts_us;
+                *presented = Some(frame);
             } else {
-                state.pending = Some(frame);
+                *pending = Some(frame);
             }
         }
+        *epoch = accept_epoch;
+        *awaiting_epoch = awaiting;
 
-        if let Some(frame) = &state.presented {
-            state.presented_us = frame.pts_us;
+        if let Some(frame) = presented.as_ref() {
+            *presented_us = frame.pts_us;
         }
 
-        let drift = state.presented_us - target;
-        let mut seek_again = false;
-        let mut nudge = 1.0;
+        let drift = *presented_us - target;
+        let mut seek_now = false;
+        let mut rate = 1.0;
         match timeline::classify_drift(drift) {
-            DriftClass::Ignore => state.seeking = false,
-            DriftClass::Nudge(rate) => {
-                nudge = rate;
+            DriftClass::Ignore => *seeking = false,
+            DriftClass::Nudge(nudge) => {
+                rate = nudge;
                 if drift.abs() < timeline::SEEK_HYSTERESIS_US {
-                    state.seeking = false;
+                    *seeking = false;
                 }
             }
             DriftClass::Seek => {
                 let now = now_ms();
-                let cooled = now - state.last_seek_ms > SEEK_BACKOFF_MS;
-                // Hysteresis: do not start another seek for the same layer while
-                // the last one has not settled.
-                if (cooled || !state.seeking) && state.last_seek_us != target {
-                    seek_again = true;
-                    state.seeking = true;
-                    state.last_seek_us = target;
-                    state.last_seek_ms = now;
-                    state.pending = None;
+                let cooled = now - *last_seek_ms > SEEK_BACKOFF_MS;
+                // Hysteresis: never chase the same target twice in a row.
+                if (cooled || !*seeking) && *last_seek_us != target {
+                    seek_now = true;
+                    *seeking = true;
+                    *last_seek_us = target;
+                    *last_seek_ms = now;
+                    *pending = None;
+                    *awaiting_epoch = true;
                 }
             }
         }
 
-        if seek_again {
-            if let Some(shared) = &shared {
+        if seek_now {
+            if let Some(shared) = shared.as_ref() {
                 shared.clear_history();
-                state.epoch = shared.epoch().wrapping_add(1);
             }
-            let clamped = timeline::clamp_pts_us(target.max(0), layer.duration_us.max(1));
-            track.send(Command::Seek {
-                target_us: clamped.max(0),
-            });
-            if !self.playing {
-                track.send(Command::Pause);
+            if let Some(track) = track.as_ref() {
+                let clamped = timeline::clamp_pts_us(target.max(0), duration);
+                track.send(Command::Seek {
+                    target_us: clamped.max(0),
+                });
             }
         }
 
-        let _ = nudge;
-        if self.playing {
-            let nudge_for_audio = nudge;
-            track.send(Command::SetRate(nudge_for_audio));
+        if playing && (rate - *last_rate).abs() > 1e-4 {
+            *last_rate = rate;
+            if let Some(track) = track.as_ref() {
+                track.try_send(Command::SetRate(rate));
+            }
         }
-        if let Some(shared) = &shared {
-            shared.note_presented(state.presented_us);
+        if let Some(shared) = shared.as_ref() {
+            shared.note_presented(*presented_us);
         }
     }
 
-    /// Decide which layers may be heard, and hand that to the mixer.
+    /// Decide which layers may be heard, and hand that to the mixer. Every
+    /// unmuted layer with footage on screen mixes in on its own volume; when the
+    /// master has nothing on screen and "keep the sound going" is on, the
+    /// highest-priority active layer is unmuted instead.
     fn update_audio(&mut self, session: &Session, settings: &Settings) {
         let now = self.clock.position_us();
         let master = session.master().map(|layer| layer.id.clone());
-        let master_ok = master.as_ref().is_none_or(|id| {
-            session
-                .layer(id)
-                .map(|layer| layer.is_active_at(now) && !layer.muted)
-                .unwrap_or(false)
-        });
-        let lender = if !master_ok && (settings.keep_sound_going || session.keep_sound_going) {
+        let master_ok = master
+            .as_ref()
+            .map(|id| {
+                session
+                    .layer(id)
+                    .map(|layer| layer.is_active_at(now) && !layer.muted)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true);
+        let lender = if !master_ok && settings.keep_sound_going {
             session.lend_master(now).map(|layer| layer.id.clone())
         } else {
             None
@@ -576,24 +672,15 @@ impl Runtime {
             let Some(slot) = &state.slot else {
                 continue;
             };
-            let is_master = master.as_deref() == Some(layer.id.as_str());
             let lending = lender.as_deref() == Some(layer.id.as_str());
-            let in_footage = layer.is_active_at(now);
+            let muted = layer.muted && !lending;
             let unlinked_ok = session.is_linked
                 || self.focused.as_deref() == Some(layer.id.as_str())
                 || state.unlinked_playing;
-            let muted = layer.muted && !lending;
-            let active = self.playing && in_footage && !muted && unlinked_ok && !layer.source.is_dir();
-            // The master keeps its own sound; anything else mixes in on its own
-            // volume, exactly like the mixer's contract says.
-            let audible = if is_master || lending {
-                active
-            } else {
-                active && !session.is_linked || (!session.is_linked && active)
-            };
+            let active = self.playing && layer.is_active_at(now) && !muted && unlinked_ok;
             slot.set_volume(layer.volume);
             slot.set_muted(muted);
-            slot.set_active(audible);
+            slot.set_active(active);
         }
     }
 
@@ -602,9 +689,23 @@ impl Runtime {
         self.pause(session);
     }
 
-    /// The longest the UI may interpolate before it stops trusting the anchor.
-    pub fn interpolation_bound_us(&self) -> i64 {
-        MAX_INTERPOLATION_US
+    /// True when at least one layer has a decoder open, i.e. whether the player
+    /// has anything to draw.
+    pub fn has_media(&self) -> bool {
+        self.layers
+            .values()
+            .any(|state| state.shared.is_some())
+    }
+
+    pub fn layer_count(&self) -> usize {
+        self.layers.len()
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        // Tracks are dropped with the map, which joins their threads.
+        self.audio.silence_all();
     }
 }
 
@@ -612,7 +713,7 @@ impl Runtime {
 mod tests {
     use super::*;
     use crate::model::geom::NormRect;
-    use crate::model::session::{MediaSource, Role};
+    use crate::model::session::Role;
 
     fn silent_layer(name: &str, z: i32) -> Layer {
         let mut layer = Layer::new(
@@ -632,6 +733,8 @@ mod tests {
         assert!(!runtime.is_playing());
         assert_eq!(runtime.position_us(), 0);
         assert!(runtime.focused().is_none());
+        assert_eq!(runtime.layer_count(), 0);
+        assert!(!runtime.has_media());
     }
 
     #[test]
@@ -641,8 +744,6 @@ mod tests {
         let mut a = silent_layer("a", 0);
         a.duration_us = 5_000_000;
         session.layers.push(a);
-        // Tracks cannot open (the files do not exist), but the clock still obeys
-        // the union bounds.
         runtime.seek_union(&session, 99_000_000);
         assert_eq!(runtime.position_us(), 5_000_000);
         runtime.seek_union(&session, -99_000_000);
@@ -665,7 +766,7 @@ mod tests {
     }
 
     #[test]
-    fn tick_reports_the_union_and_stops_at_the_end() {
+    fn tick_reports_the_union_and_does_not_play_past_the_end() {
         let mut runtime = Runtime::new(&Settings::default());
         let mut session = Session::new("t");
         let mut a = silent_layer("a", 0);
@@ -684,11 +785,32 @@ mod tests {
         session.layers.push(silent_layer("gone", 0));
         runtime.sync_session(&session, &Settings::default());
         // Give the worker a moment to fail.
-        std::thread::sleep(std::time::Duration::from_millis(80));
-        let error = runtime.error(&session.layers[0].id);
-        assert!(error.is_some(), "expected a decode error");
-        assert_eq!(runtime.backend(&session.layers[0].id), HwBackend::Software);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            runtime.error(&session.layers[0].id).is_some(),
+            "expected a decode error"
+        );
+        assert_eq!(
+            runtime.backend(&session.layers[0].id),
+            HwBackend::Software
+        );
         runtime.stop(&session);
+    }
+
+    #[test]
+    fn stepping_moves_the_clock_by_whole_frames() {
+        let mut runtime = Runtime::new(&Settings::default());
+        let mut session = Session::new("t");
+        let mut a = silent_layer("a", 0);
+        a.fps_num = 30;
+        a.fps_den = 1;
+        a.duration_us = 4_000_000;
+        session.layers.push(a);
+        runtime.seek_union(&session, 1_000_000);
+        runtime.step(&session, 1);
+        assert_eq!(runtime.position_us(), 1_033_333);
+        runtime.step(&session, -3);
+        assert_eq!(runtime.position_us(), 933_334);
     }
 
     #[test]
@@ -698,10 +820,11 @@ mod tests {
         session.is_linked = false;
         let mut a = silent_layer("a", 0);
         a.duration_us = 4_000_000;
+        let id = a.id.clone();
         session.layers.push(a);
-        runtime.sync_session(&session, &Settings::default());
-        runtime.seek_union(&session, 1_000_000);
-        // With no track the position still follows the union clock.
-        assert_eq!(runtime.position_us(), 1_000_000);
+        runtime.set_unlinked_playing(&id, true);
+        runtime.seek_unlinked(&session, &id, 2_000_000);
+        // The shared clock is untouched by a per-track seek.
+        assert_eq!(runtime.position_us(), 0);
     }
 }

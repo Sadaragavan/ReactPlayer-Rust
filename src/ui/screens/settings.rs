@@ -1,246 +1,211 @@
-//! The Settings window: hardware mode, seek step, keep-sound-going, snap
-//! sensitivity, wallpaper, and the local-data reset.
+//! Preferences: decoding, transport defaults, sound, appearance and the local
+//! data escape hatch.
 
 use eframe::egui::{self, RichText};
 
+use super::{ffmpeg_version, header};
 use crate::app::App;
-use crate::model::session::HardwareAccel;
-use crate::ui::theme;
-use crate::ui::widgets;
+use crate::model::settings::HwAccelPref;
+use crate::ui::{theme, widgets};
 
-/// Look for the Windows/macOS/Linux defaults a user might want, for the
-/// wallpaper picker's hint text.
-pub fn wallpaper_hint() -> &'static str {
-    "Any image the `image` crate can read (PNG/JPEG/WebP). Fit is Fill."
-}
-
-/// Draw the settings window.
 pub fn show(app: &mut App, ctx: &egui::Context) {
-    if !app.show_settings {
-        return;
-    }
-    let mut open = true;
-    let mut draft = app
-        .settings_draft
-        .clone()
-        .unwrap_or_else(|| app.persisted.preferences.clone());
-    let mut reset_requested = false;
+    header(app, ctx, "Settings");
+    let mut changed = false;
 
-    egui::Window::new("Settings")
-        .id(egui::Id::unique("settings-window"))
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .default_width(400.0)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+    egui::CentralPanel::default()
         .frame(
-            egui::Frame::NONE
-                .fill(theme::SURFACE)
-                .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                .inner_margin(egui::Margin::same(16)),
+            egui::Frame::new()
+                .fill(theme::BG)
+                .inner_margin(egui::Margin::same(24)),
         )
         .show(ctx, |ui| {
-            widgets::section_label(ui, "Decoding");
-            ui.horizontal_wrapped(|ui| {
-                for mode in HardwareAccel::ALL {
-                    if widgets::chip(ui, mode.label(), draft.hardware == mode) {
-                        draft.hardware = mode;
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.set_max_width(760.0);
+
+                // ---- decoding --------------------------------------
+                widgets::section(ui, "Decoding", |ui| {
+                    ui.label(
+                        RichText::new(
+                            "Hardware decoding falls back to software without asking: a file that \
+                             the driver refuses simply plays on the CPU, and the layer says so.",
+                        )
+                        .color(theme::MUTED)
+                        .size(11.5),
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        for pref in [HwAccelPref::Auto, HwAccelPref::Software] {
+                            let on = app.settings.hw_accel == pref;
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new(pref.label())
+                                            .color(if on { theme::TEXT } else { theme::MUTED })
+                                            .size(12.0),
+                                    )
+                                    .fill(if on { theme::FILL_ACTIVE } else { theme::BG })
+                                    .stroke(if on {
+                                        egui::Stroke::new(1.0, theme::ACCENT)
+                                    } else {
+                                        theme::hairline(theme::LINE)
+                                    })
+                                    .corner_radius(theme::RADIUS),
+                                )
+                                .on_hover_text(pref.description())
+                                .clicked()
+                            {
+                                if app.settings.hw_accel != pref {
+                                    app.settings.hw_accel = pref;
+                                    changed = true;
+                                }
+                            }
+                        }
+                    });
+                    ui.add_space(6.0);
+                    widgets::kv(ui, "FFmpeg (libavcodec)", &ffmpeg_version());
+                    widgets::kv(
+                        ui,
+                        "Backends tried",
+                        "VAAPI, Vulkan, VDPAU (Linux) · D3D11VA, DXVA2 (Windows) · VideoToolbox (macOS)",
+                    );
+                });
+
+                // ---- transport -------------------------------------
+                widgets::section(ui, "Transport", |ui| {
+                    ui.horizontal(|ui| {
+                        let mut step = app.settings.seek_step_ms as f32 / 1_000.0;
+                        ui.label(RichText::new("Seek step").color(theme::MUTED).size(12.0));
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut step, 1.0..=30.0)
+                                    .suffix(" s")
+                                    .fixed_decimals(1),
+                            )
+                            .changed()
+                        {
+                            app.settings.seek_step_ms = (step * 1_000.0).round() as i64;
+                            changed = true;
+                        }
+                    });
+                    ui.add_space(4.0);
+                    if widgets::chip(
+                        ui,
+                        app.settings.keep_sound_going,
+                        "Keep the sound going",
+                    )
+                    .on_hover_text(
+                        "When the master audio layer has no footage at the playhead, the \
+                         highest active layer lends its sound instead of dropping to silence.",
+                    )
+                    .clicked()
+                    {
+                        app.settings.keep_sound_going = !app.settings.keep_sound_going;
+                        changed = true;
                     }
-                }
-            });
-            widgets::dim(ui, mode_help(draft.hardware));
-            ui.add_space(10.0);
+                    ui.add_space(6.0);
+                    let mut volume = app.settings.master_volume;
+                    if widgets::slider(ui, "Master volume", &mut volume, 0.0..=1.0, "").changed() {
+                        app.settings.master_volume = volume;
+                        changed = true;
+                    }
+                    if let Some(runtime) = app.runtime.as_mut() {
+                        if changed {
+                            runtime.set_master_volume(app.settings.master_volume);
+                        }
+                    }
+                });
 
-            widgets::section_label(ui, "Playback");
-            ui.horizontal(|ui| {
-                widgets::dim(ui, "Seek step");
-                let mut ms = draft.seek_step_ms as f64;
-                let resp = ui.add(
-                    egui::DragValue::new(&mut ms)
-                        .speed(100.0)
-                        .range(100.0..=600_000.0)
-                        .suffix(" ms"),
-                );
-                if resp.changed() {
-                    draft.seek_step_ms = ms.round() as u64;
-                }
-                widgets::dim(ui, "used by ←/→ while playing");
-            });
-            ui.add_space(4.0);
-            widgets::checkbox(ui, &mut draft.keep_sound_going, "Keep the sound going");
-            widgets::dim(
-                ui,
-                "Lends audio to the highest-z active layer when the master layer has no footage.",
-            );
-            ui.add_space(10.0);
+                // ---- editing ---------------------------------------
+                widgets::section(ui, "Canvas and editing", |ui| {
+                    let mut snap = app.settings.snap_sensitivity_px;
+                    if widgets::slider(ui, "Snap sensitivity", &mut snap, 0.0..=24.0, " px")
+                        .changed()
+                    {
+                        app.settings.snap_sensitivity_px = snap;
+                        changed = true;
+                    }
+                    if widgets::chip(ui, app.canvas.lock_layout, "Lock layout")
+                        .on_hover_text("Stops every rectangle on the canvas from being dragged.")
+                        .clicked()
+                    {
+                        app.canvas.lock_layout = !app.canvas.lock_layout;
+                    }
+                    if widgets::chip(ui, app.settings.theater, "Start in theater mode").clicked() {
+                        app.settings.theater = !app.settings.theater;
+                        changed = true;
+                    }
+                    if let Some(aspect) = app.session.as_ref().map(|session| session.canvas_aspect) {
+                        widgets::kv(ui, "Canvas aspect", aspect.label());
+                    }
+                });
 
-            widgets::section_label(ui, "Canvas");
-            ui.horizontal(|ui| {
-                widgets::dim(ui, "Snap sensitivity");
-                let mut px = draft.snap_px;
-                let resp = ui.add(
-                    egui::DragValue::new(&mut px)
-                        .speed(0.5)
-                        .range(0.0..=64.0)
-                        .suffix(" px"),
-                );
-                if resp.changed() {
-                    draft.snap_px = px;
-                }
-                widgets::dim(ui, "0 disables snapping");
-            });
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                widgets::dim(ui, "Wallpaper");
-                if widgets::button(ui, "Choose…").clicked()
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("image", &["png", "jpg", "jpeg", "webp", "bmp"])
-                        .pick_file()
-                {
-                    draft.wallpaper = Some(path.to_string_lossy().to_string());
-                }
-                if widgets::button(ui, "Clear").clicked() {
-                    draft.wallpaper = None;
-                }
-            });
-            if let Some(w) = draft.wallpaper.as_ref() {
-                widgets::dim(ui, w.clone());
-            }
-            widgets::dim(ui, wallpaper_hint());
-            ui.add_space(12.0);
+                // ---- appearance ------------------------------------
+                widgets::section(ui, "Appearance", |ui| {
+                    let path = app
+                        .settings
+                        .wallpaper
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "None: plain black".to_owned());
+                    widgets::kv(ui, "Wallpaper", &path);
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Choose image…").clicked() {
+                            app.pick_wallpaper(ctx);
+                        }
+                        if ui.button("Reset to black").clicked() {
+                            app.settings.wallpaper = None;
+                            app.reload_wallpaper(ctx);
+                            changed = true;
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("The wallpaper is never blurred; it is dimmed to 70% black.")
+                            .color(theme::MUTED)
+                            .size(11.0),
+                    );
+                });
 
-            widgets::rule(ui);
-            ui.add_space(6.0);
-            widgets::section_label(ui, "Local data");
-            widgets::dim(
-                ui,
-                format!("{}", app.store.paths.data_dir.display()),
-            );
-            ui.add_space(4.0);
-            if widgets::danger_button(ui, "Clear local app data…").clicked() {
-                reset_requested = true;
-            }
-            ui.add_space(10.0);
-
-            ui.horizontal(|ui| {
-                if widgets::accent_button(ui, "Save").clicked() {
-                    save(app, &draft);
-                }
-                if widgets::button(ui, "Close").clicked() {
-                    app.show_settings = false;
-                    app.settings_draft = None;
-                }
-            });
-        });
-
-    if !open {
-        app.show_settings = false;
-        app.settings_draft = None;
-    } else if app.show_settings {
-        app.settings_draft = Some(draft);
-    }
-
-    if reset_requested {
-        confirm_clear(app, ctx);
-    }
-}
-
-fn save(app: &mut App, draft: &crate::model::Preferences) {
-    let mut prefs = draft.clone().sanitized();
-    prefs.last_session = app.persisted.preferences.last_session.clone();
-    prefs.window_size = app.persisted.preferences.window_size;
-    app.persisted.preferences = prefs.clone();
-    app.runtime.apply_preferences(&prefs);
-    app.save_preferences();
-    // Hardware mode only takes effect on newly opened media, which is honest:
-    // re-open the current session so the change is actually applied.
-    app.bind_runtime();
-    app.notice("Settings saved");
-}
-
-fn mode_help(mode: HardwareAccel) -> &'static str {
-    match mode {
-        HardwareAccel::Auto => "Use hardware decode when it works, silently fall back to software.",
-        HardwareAccel::HardwarePreferred => {
-            "Try hardware first and keep it even if initialisation is slow; still falls back on failure."
-        }
-        HardwareAccel::SoftwareOnly => "Never touch a GPU decoder. Also the right choice for debugging.",
-    }
-}
-
-fn confirm_clear(app: &mut App, ctx: &egui::Context) {
-    let mut open = true;
-    let mut confirmed = false;
-    egui::Window::new("Clear local app data?")
-        .id(egui::Id::unique("clear-data-confirm"))
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .frame(
-            egui::Frame::NONE
-                .fill(theme::SURFACE)
-                .stroke(egui::Stroke::new(1.0, theme::ERROR))
-                .inner_margin(egui::Margin::same(16)),
-        )
-        .show(ctx, |ui| {
-            ui.set_width(380.0);
-            ui.label(
-                RichText::new("This deletes every session, preset, thumbnail, and preference.")
-                    .size(13.0)
-                    .color(theme::TEXT),
-            );
-            widgets::dim(ui, "Generated demo clips are removed too. This cannot be undone.");
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                if widgets::danger_button(ui, "Delete everything").clicked() {
-                    confirmed = true;
-                }
-                if widgets::button(ui, "Cancel").clicked() {
-                    confirmed = false;
-                }
+                // ---- data ------------------------------------------
+                widgets::section(ui, "Local data", |ui| {
+                    let (files, bytes) = app.store.usage();
+                    widgets::kv(ui, "Config", &app.store.config_dir().display().to_string());
+                    widgets::kv(ui, "Data", &app.store.data_dir().display().to_string());
+                    widgets::kv(
+                        ui,
+                        "On disk",
+                        &format!("{} files, {:.1} MB", files, bytes as f64 / 1_048_576.0),
+                    );
+                    ui.add_space(8.0);
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Clear local data…").color(theme::DANGER).size(12.5),
+                            )
+                            .fill(theme::BG)
+                            .stroke(egui::Stroke::new(1.0, theme::DANGER))
+                            .corner_radius(theme::RADIUS),
+                        )
+                        .clicked()
+                    {
+                        app.confirm.clear_data = true;
+                    }
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "Reaction Player {} · egui {}",
+                            env!("CARGO_PKG_VERSION"),
+                            eframe::egui::VERSION
+                        ))
+                        .color(theme::MUTED)
+                        .size(10.5),
+                    );
+                });
             });
         });
-    if confirmed {
-        match app.store.paths.clear() {
-            Ok(()) => {
-                app.notice("Local app data cleared");
-                app.sessions.clear();
-                app.persisted = crate::app::PersistedState {
-                    preferences: crate::model::Preferences::default(),
-                    presets: crate::model::PresetLibrary::default(),
-                };
-                app.session = crate::model::Session::new(
-                    crate::model::store::generate_id(),
-                    "Untitled",
-                    crate::model::CanvasAspect::Widescreen,
-                );
-                app.show_settings = false;
-                app.settings_draft = None;
-                app.screen = crate::app::Screen::Home;
-                app.bind_runtime();
-            }
-            Err(e) => app.error(format!("Could not clear local data: {e}")),
-        }
-    }
-    let _ = open;
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_mode_has_help_text() {
-        for m in HardwareAccel::ALL {
-            let help = mode_help(m);
-            assert!(!help.is_empty());
-            assert!(help.ends_with('.'), "{help}");
-        }
-    }
-
-    #[test]
-    fn wallpaper_hint_mentions_the_fit_mode() {
-        assert!(wallpaper_hint().contains("Fill"));
+    if changed {
+        app.save_settings();
     }
 }
