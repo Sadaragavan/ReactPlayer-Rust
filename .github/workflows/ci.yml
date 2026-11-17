@@ -1,27 +1,53 @@
 name: ci
 on:
   push:
-  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
   probe:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: toolchain
-        run: |
-          cargo --version
-          rustc --version
-          which clang pkg-config ffmpeg || true
-      - name: crate versions
-        run: |
-          for c in eframe egui-wgpu wgpu bytemuck ffmpeg-next ffmpeg-sys-next cpal ringbuf arboard rfd directories serde serde_json image; do
-            v=$(curl -s "https://crates.io/api/v1/crates/$c" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['crate']['max_stable_version'])" 2>/dev/null)
-            echo "$c = $v"
-          done
-      - name: system ffmpeg
+        with:
+          fetch-depth: 0
+      - name: deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev libasound2-dev libva-dev libvulkan-dev pkg-config clang
-          pkg-config --modversion libavcodec libavformat libavutil libswscale libswresample libavfilter libavdevice
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev libasound2-dev libva-dev libvulkan-dev pkg-config clang libudev-dev
+      - name: probe
+        run: |
+          exec > >(tee -a ci-report.txt) 2>&1
+          set +e
+          echo "=== ubuntu ==="
+          . /etc/os-release; echo "$PRETTY_NAME"
+          echo "rustc: $(rustc --version)"; echo "cargo: $(cargo --version)"
+          echo "clang: $(clang --version | head -1)"
+          echo "--- pkg-config ffmpeg ---"
+          for l in libavcodec libavformat libavutil libswscale libswresample libavfilter libavdevice; do echo "$l $(pkg-config --modversion $l)"; done
+          echo "--- ffmpeg ---"
           ffmpeg -version | head -2
+          echo "--- crates.io latest ---"
+          for c in eframe egui egui-wgpu wgpu wgpu-hal bytemuck ffmpeg-next ffmpeg-sys-next cpal ringbuf arboard rfd directories serde serde_json image pollster; do
+            printf '%s ' "$c"
+            curl -s -H 'User-Agent: probe' "https://crates.io/api/v1/crates/$c" | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin); print(d["crate"]["max_stable_version"])
+except Exception as e:
+    print("ERR", e)'
+          done
+          echo "=== arch ==="
+          docker run --rm archlinux:latest bash -c 'pacman -Sy --noconfirm --quiet >/dev/null 2>&1; pacman -Si ffmpeg rust clang | grep -E "^(Name|Version)" ; pacman -Si ffmpeg | grep -A1 "Depends On"' 2>&1 | head -40
+      - name: publish report
+        if: always()
+        run: |
+          git config user.name "ci"
+          git config user.email "ci@localhost"
+          git add -f ci-report.txt
+          git commit -q -m "ci: probe report [skip ci]" || exit 0
+          for i in 1 2 3 4 5; do
+            git pull --rebase -q && git push -q && break
+            sleep 5
+          done
