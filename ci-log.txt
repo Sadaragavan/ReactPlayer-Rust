@@ -1,0 +1,1594 @@
+===== cargo check --all-targets =====
+    Updating crates.io index
+     Locking 354 packages to highest Rust 1.95 compatible versions
+    Checking reaction-player v0.1.0 (/__w/ReactPlayer-Rust/ReactPlayer-Rust)
+error[E0407]: method `update` is not a member of trait `eframe::App`
+    --> src/app.rs:1402:5
+     |
+1402 | /     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+1403 | |         let now = now_ms();
+1404 | |         self.toasts.tick(now);
+1405 | |         self.handle_dropped(ctx);
+...    |
+1449 | |     }
+     | |_____^ not a member of trait `eframe::App`
+
+error[E0433]: cannot find `BuildStreamError` in `cpal`
+   --> src/engine/audio.rs:221:38
+    |
+221 |                     return Err(cpal::BuildStreamError::StreamConfigNotSupported);
+    |                                      ^^^^^^^^^^^^^^^^ could not find `BuildStreamError` in `cpal`
+
+error[E0433]: cannot find `TopBottomPanel` in `egui`
+  --> src/ui/screens/player.rs:74:11
+   |
+74 |     egui::TopBottomPanel::top("player-top")
+   |           ^^^^^^^^^^^^^^ could not find `TopBottomPanel` in `egui`
+
+error[E0433]: cannot find `TopBottomPanel` in `egui`
+   --> src/ui/screens/player.rs:685:11
+    |
+685 |     egui::TopBottomPanel::bottom("transport")
+    |           ^^^^^^^^^^^^^^ could not find `TopBottomPanel` in `egui`
+
+error[E0433]: cannot find `SidePanel` in `egui`
+   --> src/ui/screens/player.rs:950:11
+    |
+950 |     egui::SidePanel::right("layers")
+    |           ^^^^^^^^^ could not find `SidePanel` in `egui`
+
+error[E0433]: cannot find `TopBottomPanel` in `egui`
+  --> src/ui/screens/studio.rs:44:11
+   |
+44 |     egui::TopBottomPanel::top("studio-controls")
+   |           ^^^^^^^^^^^^^^ could not find `TopBottomPanel` in `egui`
+
+error[E0433]: cannot find `TopBottomPanel` in `egui`
+  --> src/ui/screens/mod.rs:22:11
+   |
+22 |     egui::TopBottomPanel::top("chrome")
+   |           ^^^^^^^^^^^^^^ could not find `TopBottomPanel` in `egui`
+
+error[E0425]: cannot find type `BuildStreamError` in crate `cpal`
+   --> src/engine/audio.rs:195:66
+    |
+195 |         let build = |mixer: Mixer| -> Result<cpal::Stream, cpal::BuildStreamError> {
+    |                                                                  ^^^^^^^^^^^^^^^^ not found in `cpal`
+
+error[E0425]: cannot find value `SWS_BILINEAR` in crate `ffi`
+   --> src/engine/track.rs:929:26
+    |
+929 |                     ffi::SWS_BILINEAR as c_int,
+    |                          ^^^^^^^^^^^^ not found in `ffi`
+
+error[E0425]: cannot find value `AV_FRAME_DATA_DISPLAYMATRIX` in crate `ffi`
+    --> src/engine/track.rs:1072:60
+     |
+1072 |         let side = ffi::av_frame_get_side_data(frame, ffi::AV_FRAME_DATA_DISPLAYMATRIX);
+     |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `ffi`
+
+error[E0425]: cannot find value `VERSION` in crate `eframe::egui`
+   --> src/ui/screens/settings.rs:199:43
+    |
+199 | ...                   eframe::egui::VERSION
+    |                                     ^^^^^^^ not found in `eframe::egui`
+
+warning: unused import: `Producer`
+  --> src/engine/audio.rs:18:43
+   |
+18 | use ringbuf::traits::{Consumer, Observer, Producer, Split};
+   |                                           ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0046]: not all trait items implemented, missing: `ui`
+    --> src/app.rs:1397:1
+     |
+1397 | impl eframe::App for App {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^ missing `ui` in implementation
+     |
+     = help: implement the missing item: `fn ui(&mut self, _: &mut Ui, _: &mut eframe::Frame) { todo!() }`
+
+error[E0615]: attempted to take value of method `path` on type `&Arc<dyn DroppedFile + Send + Sync>`
+   --> src/app.rs:947:41
+    |
+947 |                 .filter_map(|file| file.path.clone())
+    |                                         ^^^^ method, not a field
+    |
+help: use parentheses to call the method
+    |
+947 |                 .filter_map(|file| file.path().clone())
+    |                                             ++
+
+error[E0615]: attempted to take value of method `path` on type `&ringbuf::Arc<dyn DroppedFile + Send + Sync>`
+   --> src/app.rs:947:41
+    |
+947 |                 .filter_map(|file| file.path.clone())
+    |                                         ^^^^ method, not a field
+    |
+help: use parentheses to call the method
+    |
+947 |                 .filter_map(|file| file.path().clone())
+    |                                             ++
+
+error[E0599]: no method named `screen_rect` found for reference `&eframe::egui::Context` in the current scope
+    --> src/app.rs:1375:24
+     |
+1375 |         let rect = ctx.screen_rect().shrink(24.0);
+     |                        ^^^^^^^^^^^ method not found in `&eframe::egui::Context`
+
+warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
+    --> src/app.rs:1378:23
+     |
+1378 |             egui::Id::new("drop-overlay"),
+     |                       ^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+error[E0560]: struct `NativeOptions` has no field named `vsync`
+    --> src/app.rs:1499:9
+     |
+1499 |         vsync: true,
+     |         ^^^^^ `NativeOptions` does not have this field
+     |
+     = note: available fields are: `run_and_return`, `event_loop_builder`, `window_builder`, `centered`, `wgpu_options` ... and 5 others
+
+error[E0599]: no method named `name` found for struct `cpal::Device` in the current scope
+   --> src/engine/audio.rs:159:14
+    |
+158 |         let device_name = device
+159 |             .name()
+    |              ^^^^
+    |
+help: there is a method `ne` with a similar name, but with different arguments
+   --> library/core/src/cmp.rs:278:4
+
+error[E0610]: `u32` is a primitive type and therefore doesn't have fields
+   --> src/engine/audio.rs:179:39
+    |
+179 |         let rate = config.sample_rate.0;
+    |                                       ^
+
+error[E0308]: mismatched types
+   --> src/engine/audio.rs:188:13
+    |
+188 |             channels,
+    |             ^^^^^^^^ expected `usize`, found `u16`
+    |
+help: you can convert a `u16` to a `usize`
+    |
+188 |             channels: channels.into(),
+    |             +++++++++         +++++++
+
+error[E0308]: mismatched types
+   --> src/engine/audio.rs:199:21
+    |
+198 |                 SampleFormat::F32 => device.build_output_stream(
+    |                                             ------------------- arguments to this method are incorrect
+199 |                     &config,
+    |                     ^^^^^^^ expected `StreamConfig`, found `&StreamConfig`
+    |
+note: method defined here
+   --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cpal-0.18.2/src/traits.rs:318:8
+    |
+318 |     fn build_output_stream<T, D, E>(
+    |        ^^^^^^^^^^^^^^^^^^^
+help: consider removing the borrow
+    |
+199 -                     &config,
+199 +                     config,
+    |
+
+error[E0308]: mismatched types
+   --> src/engine/audio.rs:206:25
+    |
+205 |                     device.build_output_stream(
+    |                            ------------------- arguments to this method are incorrect
+206 |                         &config,
+    |                         ^^^^^^^ expected `StreamConfig`, found `&StreamConfig`
+    |
+note: method defined here
+   --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cpal-0.18.2/src/traits.rs:318:8
+    |
+318 |     fn build_output_stream<T, D, E>(
+    |        ^^^^^^^^^^^^^^^^^^^
+help: consider removing the borrow
+    |
+206 -                         &config,
+206 +                         config,
+    |
+
+error[E0308]: mismatched types
+   --> src/engine/audio.rs:214:25
+    |
+213 |                     device.build_output_stream(
+    |                            ------------------- arguments to this method are incorrect
+214 |                         &config,
+    |                         ^^^^^^^ expected `StreamConfig`, found `&StreamConfig`
+    |
+note: method defined here
+   --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cpal-0.18.2/src/traits.rs:318:8
+    |
+318 |     fn build_output_stream<T, D, E>(
+    |        ^^^^^^^^^^^^^^^^^^^
+help: consider removing the borrow
+    |
+214 -                         &config,
+214 +                         config,
+    |
+
+error[E0308]: mismatched types
+   --> src/engine/track.rs:368:13
+    |
+368 |             senders,
+    |             ^^^^^^^ expected `Vec<Sender<Command>>`, found `Vec<SyncSender<Command>>`
+    |
+    = note: expected struct `Vec<std::sync::mpsc::Sender<track::Command>>`
+               found struct `Vec<SyncSender<track::Command>>`
+
+error[E0599]: no method named `try_send` found for reference `&std::sync::mpsc::Sender<track::Command>` in the current scope
+   --> src/engine/track.rs:386:64
+    |
+386 |             if let Err(TrySendError::Disconnected(_)) = sender.try_send(command) {
+    |                                                                ^^^^^^^^
+    |
+help: there is a method `send` with a similar name
+    |
+386 -             if let Err(TrySendError::Disconnected(_)) = sender.try_send(command) {
+386 +             if let Err(TrySendError::Disconnected(_)) = sender.send(command) {
+    |
+
+error[E0308]: mismatched types
+     --> src/engine/track.rs:925:21
+      |
+  922 |                 ffi::sws_getContext(
+      |                 ------------------- arguments to this function are incorrect
+...
+  925 |                     format,
+      |                     ^^^^^^ expected `AVPixelFormat`, found `i32`
+      |
+note: function defined here
+     --> /__w/ReactPlayer-Rust/ReactPlayer-Rust/target/debug/build/ffmpeg-sys-next/6b7daab9a905df7c/out/bindings.rs:15631:12
+      |
+15631 |     pub fn sws_getContext(
+      |            ^^^^^^^^^^^^^^
+
+error[E0308]: `if` and `else` have incompatible types
+    --> src/engine/track.rs:1018:17
+     |
+1009 | /             if ptr.is_null() || stride == 0 {
+1010 | |                 (ptr::null(), 0)
+     | |                 ---------------- expected because of this
+1011 | |             } else {
+1012 | |                 let packed = (stride.unsigned_abs() as usize).max(plane_w as usize);
+...    |
+1018 | |                 (base, packed)
+     | |                 ^^^^^^^^^^^^^^ types differ in mutability
+1019 | |             }
+     | |_____________- `if` and `else` have incompatible types
+     |
+     = note: expected tuple `(*const _, {integer})`
+                found tuple `(*mut u8, usize)`
+
+error[E0308]: mismatched types
+   --> src/gpu/renderer.rs:303:18
+    |
+303 |             .max(crate::gpu::UNIFORM_STRIDE) as usize;
+    |              --- ^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `u32`, found `u64`
+    |              |
+    |              arguments to this method are incorrect
+    |
+help: the return type of this call is `u64` due to the type of the argument passed
+   --> src/gpu/renderer.rs:300:30
+    |
+300 |           let uniform_stride = device
+    |  ______________________________^
+301 | |             .limits()
+302 | |             .min_uniform_buffer_offset_alignment
+303 | |             .max(crate::gpu::UNIFORM_STRIDE) as usize;
+    | |__________________--------------------------^
+    |                    |
+    |                    this argument influences the return type of `max`
+note: method defined here
+   --> library/core/src/cmp.rs:1097:7
+note: the `max` call is resolved to the method in `std::cmp::Ord`, shadowing the method of the same name on trait `std::iter::Iterator`
+   --> src/gpu/renderer.rs:303:14
+    |
+303 |             .max(crate::gpu::UNIFORM_STRIDE) as usize;
+    |              ^^^ refers to `std::cmp::Ord::max`
+    = note: additionally, there are 4 other available methods that aren't in scope
+help: you can convert a `u64` to a `u32` and panic if the converted value doesn't fit
+    |
+303 |             .max(crate::gpu::UNIFORM_STRIDE.try_into().unwrap()) as usize;
+    |                                            ++++++++++++++++++++
+help: you might have meant to call one of the other methods; you can use the fully-qualified path to call one of them explicitly
+    |
+300 ~         let uniform_stride = <_ as fearless_simd::generated::simd_trait::SimdFloat<_>>::max::<_>(device
+301 |             .limits()
+302 ~             .min_uniform_buffer_offset_alignment, crate::gpu::UNIFORM_STRIDE) as usize;
+    |
+300 ~         let uniform_stride = <_ as fearless_simd::generated::simd_trait::SimdInt<_>>::max::<_>(device
+301 |             .limits()
+302 ~             .min_uniform_buffer_offset_alignment, crate::gpu::UNIFORM_STRIDE) as usize;
+    |
+300 ~         let uniform_stride = <_ as num_traits::float::FloatCore>::max(device
+301 |             .limits()
+302 ~             .min_uniform_buffer_offset_alignment, crate::gpu::UNIFORM_STRIDE) as usize;
+    |
+300 ~         let uniform_stride = <_ as num_traits::float::Float>::max(device
+301 |             .limits()
+302 ~             .min_uniform_buffer_offset_alignment, crate::gpu::UNIFORM_STRIDE) as usize;
+    |
+    = and 1 other candidate
+
+error[E0308]: mismatched types
+    --> src/ui/screens/home.rs:15:15
+     |
+  15 |         .show(ctx, |ui| {
+     |          ---- ^^^ types differ in mutability
+     |          |
+     |          arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+error[E0308]: mismatched types
+    --> src/ui/screens/player.rs:36:19
+     |
+  36 |             .show(ctx, |ui| {
+     |              ---- ^^^ types differ in mutability
+     |              |
+     |              arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+error[E0308]: mismatched types
+    --> src/ui/screens/player.rs:179:15
+     |
+ 179 |         .show(ctx, |ui| {
+     |          ---- ^^^ types differ in mutability
+     |          |
+     |          arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
+    --> src/ui/screens/player.rs:1015:43
+     |
+1015 | ...                   egui::Id::new(("layer-drag", id_for_drag.clone())),
+     |                                 ^^^
+
+error[E0277]: the size for values of type `str` cannot be known at compilation time
+    --> src/ui/screens/player.rs:1069:24
+     |
+1069 |                 if let Some(dragged) = drop {
+     |                        ^^^^^^^^^^^^^ doesn't have a size known at compile-time
+     |
+     = help: the trait `Sized` is not implemented for `str`
+note: required by a bound in `Some`
+    --> library/core/src/option.rs:606:4
+
+error[E0308]: mismatched types
+    --> src/ui/screens/presets.rs:22:15
+     |
+  22 |         .show(ctx, |ui| {
+     |          ---- ^^^ types differ in mutability
+     |          |
+     |          arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+error[E0308]: mismatched types
+    --> src/ui/screens/sessions.rs:20:15
+     |
+  20 |         .show(ctx, |ui| {
+     |          ---- ^^^ types differ in mutability
+     |          |
+     |          arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
+   --> src/ui/screens/sessions.rs:234:91
+    |
+234 |     if let Some(texture) = ctx.data(|data| data.get_temp::<egui::TextureHandle>(egui::Id::new(&key)))
+    |                                                                                           ^^^
+
+warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
+   --> src/ui/screens/sessions.rs:242:52
+    |
+242 |     ctx.data_mut(|data| data.insert_temp(egui::Id::new(&key), texture.clone()));
+    |                                                    ^^^
+
+error[E0599]: no variant, associated function, or constant named `Software` found for enum `HwAccelPref` in the current scope
+  --> src/ui/screens/settings.rs:37:70
+   |
+37 |                         for pref in [HwAccelPref::Auto, HwAccelPref::Software] {
+   |                                                                      ^^^^^^^^ variant, associated function, or constant not found in `HwAccelPref`
+   |
+  ::: src/model/settings.rs:16:1
+   |
+16 | pub enum HwAccelPref {
+   | -------------------- variant, associated function, or constant `Software` not found for this enum
+
+error[E0308]: mismatched types
+    --> src/ui/screens/settings.rs:21:15
+     |
+  21 |         .show(ctx, |ui| {
+     |          ---- ^^^ types differ in mutability
+     |          |
+     |          arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+error[E0308]: mismatched types
+    --> src/ui/screens/studio.rs:24:19
+     |
+  24 |             .show(ctx, |ui| {
+     |              ---- ^^^ types differ in mutability
+     |              |
+     |              arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+error[E0308]: mismatched types
+    --> src/ui/screens/studio.rs:165:15
+     |
+ 165 |         .show(ctx, |ui| {
+     |          ---- ^^^ types differ in mutability
+     |          |
+     |          arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+error[E0599]: no method named `screen_rect` found for reference `&eframe::egui::Context` in the current scope
+  --> src/ui/screens/mod.rs:81:24
+   |
+81 |         egui::vec2(ctx.screen_rect().width(), 1.0),
+   |                        ^^^^^^^^^^^ method not found in `&eframe::egui::Context`
+
+warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
+  --> src/ui/screens/mod.rs:85:19
+   |
+85 |         egui::Id::new("chrome-rule"),
+   |                   ^^^
+
+error[E0599]: no method named `wants_keyboard_input` found for reference `&eframe::egui::Context` in the current scope
+   --> src/ui/shortcuts.rs:179:12
+    |
+179 |     if ctx.wants_keyboard_input() {
+    |            ^^^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `egui_wants_keyboard_input` with a similar name
+    |
+179 |     if ctx.egui_wants_keyboard_input() {
+    |            +++++
+
+error[E0599]: no method named `style` found for reference `&eframe::egui::Context` in the current scope
+    --> src/ui/theme.rs:67:27
+     |
+  67 |     let mut style = (*ctx.style()).clone();
+     |                           ^^^^^
+     |
+help: there is a method `style_of` with a similar name, but with different arguments
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/context.rs:2645:5
+     |
+2645 |     pub fn style_of(&self, theme: Theme) -> Arc<Style> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `set_style` found for reference `&eframe::egui::Context` in the current scope
+    --> src/ui/theme.rs:79:9
+     |
+  79 |     ctx.set_style(style);
+     |         ^^^^^^^^^
+     |
+help: there is a method `set_style_of` with a similar name, but with different arguments
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/context.rs:2674:5
+     |
+2674 |     pub fn set_style_of(&self, theme: Theme, style: impl Into<Arc<Style>>) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated field `eframe::egui::Visuals::clip_rect_margin`: This is now unused and has no effect
+   --> src/ui/theme.rs:136:5
+    |
+136 |     v.clip_rect_margin = 0.0;
+    |     ^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `screen_rect` found for reference `&eframe::egui::Context` in the current scope
+   --> src/ui/toast.rs:102:26
+    |
+102 |         let screen = ctx.screen_rect();
+    |                          ^^^^^^^^^^^ method not found in `&eframe::egui::Context`
+
+warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
+   --> src/ui/toast.rs:104:35
+    |
+104 |         egui::Area::new(egui::Id::new("toasts"))
+    |                                   ^^^
+
+error[E0599]: no variant, associated function, or constant named `Software` found for enum `model::settings::HwAccelPref` in the current scope
+  --> src/ui/screens/settings.rs:37:70
+   |
+37 |                         for pref in [HwAccelPref::Auto, HwAccelPref::Software] {
+   |                                                                      ^^^^^^^^ variant, associated function, or constant not found in `model::settings::HwAccelPref`
+   |
+  ::: src/model/settings.rs:16:1
+   |
+16 | pub enum HwAccelPref {
+   | -------------------- variant, associated function, or constant `Software` not found for this enum
+
+error[E0507]: cannot move out of a shared reference
+   --> src/engine/runtime.rs:130:9
+    |
+130 |         *self.audio.status()
+    |         ^^^^^^^^^^^^^^^^^^^^ move occurs because value has type `AudioStatus`, which does not implement the `Copy` trait
+    |
+help: consider cloning the value if the performance cost is acceptable
+    |
+130 -         *self.audio.status()
+130 +         self.audio.status().clone()
+    |
+
+error[E0499]: cannot borrow `*self` as mutable more than once at a time
+   --> src/engine/track.rs:542:43
+    |
+537 |                 if let Some(decoder) = self.decoder.as_mut() {
+    |                                        ------------ first mutable borrow occurs here
+...
+542 |                     if let Err(message) = self.seek_to(decoder, target_us) {
+    |                                           ^^^^         ------- first borrow later used here
+    |                                           |
+    |                                           second mutable borrow occurs here
+
+error[E0499]: cannot borrow `*self` as mutable more than once at a time
+   --> src/engine/track.rs:557:43
+    |
+555 |                 if let Some(decoder) = self.decoder.as_mut() {
+    |                                        ------------ first mutable borrow occurs here
+556 |                     self.shared.epoch.fetch_add(1, Ordering::AcqRel);
+557 |                     if let Err(message) = self.seek_to(decoder, target) {
+    |                                           ^^^^         ------- first borrow later used here
+    |                                           |
+    |                                           second mutable borrow occurs here
+
+error[E0596]: cannot borrow `context` as mutable, as it is not declared as mutable
+   --> src/engine/track.rs:725:35
+    |
+725 |                     let ctx_ptr = context.as_mut_ptr();
+    |                                   ^^^^^^^ cannot borrow as mutable
+    |
+help: consider changing this to be mutable
+    |
+720 |                 let mut context =
+    |                     +++
+
+error[E0382]: use of moved value: `order`
+   --> src/model/presets.rs:330:38
+    |
+320 |     let order = session.paint_order();
+    |         ----- move occurs because `order` has type `std::vec::Vec<usize>`, which does not implement the `Copy` trait
+321 |     for (slot_index, layer_index) in order.into_iter().enumerate() {
+    |                                            ----------- `order` moved due to this method call
+...
+330 |     for (slot_index, layer_index) in order.into_iter().enumerate() {
+    |                                      ^^^^^ value used here after move
+    |
+note: `std::iter::IntoIterator::into_iter` takes ownership of the receiver `self`, which moves `order`
+   --> library/core/src/iter/traits/collect.rs:312:17
+help: you can `clone` the value and consume it, but this might not be your desired behavior
+    |
+321 |     for (slot_index, layer_index) in order.clone().into_iter().enumerate() {
+    |                                           ++++++++
+
+error[E0631]: type mismatch in function arguments
+   --> src/ui/toast.rs:179:38
+    |
+179 |         assert_eq!(toasts.last().map(String::as_str), Some("message 5"));
+    |                                  --- ^^^^^^^^^^^^^^
+    |                                  |   |
+    |                                  |   expected due to this
+    |                                  |   found signature defined here
+    |                                  required by a bound introduced by this call
+    |
+    = note: expected function signature `fn(&Toast) -> _`
+               found function signature `fn(&std::string::String) -> _`
+note: required by a bound in `std::option::Option::<T>::map`
+   --> library/core/src/option.rs:1160:4
+help: consider wrapping the function in a closure
+    |
+179 |         assert_eq!(toasts.last().map(|arg0: &Toast| String::as_str(/* &std::string::String */)), Some("message 5"));
+    |                                      ++++++++++++++               ++++++++++++++++++++++++++++
+
+error[E0507]: cannot move out of a shared reference
+   --> src/engine/runtime.rs:130:9
+    |
+130 |         *self.audio.status()
+    |         ^^^^^^^^^^^^^^^^^^^^ move occurs because value has type `engine::audio::AudioStatus`, which does not implement the `Copy` trait
+    |
+help: consider cloning the value if the performance cost is acceptable
+    |
+130 -         *self.audio.status()
+130 +         self.audio.status().clone()
+    |
+
+error[E0502]: cannot borrow `*app` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:558:9
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+558 |         app.copy_frame();
+    |         ^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+594 |     let mut crop = session.layer(&id).map(|layer| layer.crop).unwrap_or(Crop::ZERO);
+    |                    ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:563:32
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+563 |         if let Some(session) = app.session.as_mut() {
+    |                                ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+594 |     let mut crop = session.layer(&id).map(|layer| layer.crop).unwrap_or(Crop::ZERO);
+    |                    ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:570:32
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+570 |         if let Some(session) = app.session.as_mut() {
+    |                                ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+594 |     let mut crop = session.layer(&id).map(|layer| layer.crop).unwrap_or(Crop::ZERO);
+    |                    ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:577:32
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+577 |         if let Some(session) = app.session.as_mut() {
+    |                                ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+594 |     let mut crop = session.layer(&id).map(|layer| layer.crop).unwrap_or(Crop::ZERO);
+    |                    ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:584:32
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+584 |         if let Some(session) = app.session.as_mut() {
+    |                                ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+594 |     let mut crop = session.layer(&id).map(|layer| layer.crop).unwrap_or(Crop::ZERO);
+    |                    ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:601:30
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+601 |         if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
+    |                              ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+607 |     let mut opacity = session.layer(&id).map(|layer| layer.opacity).unwrap_or(1.0);
+    |                       ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:609:30
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+609 |         if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
+    |                              ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+614 |     let fit = session.layer(&id).map(|layer| layer.fit).unwrap_or(FitMode::Contain);
+    |               ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:616:30
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+616 |         if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
+    |                              ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+621 |     let mut master = session.master_audio.clone();
+    |                      -------------------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:631:32
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+631 |         if let Some(session) = app.session.as_mut() {
+    |                                ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+638 |     let locked = session.layer(&id).map(|layer| layer.locked).unwrap_or(false);
+    |                  ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:643:30
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+643 |         if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
+    |                              ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+648 |     let visible = session.layer(&id).map(|layer| layer.visible).unwrap_or(true);
+    |                   ------- immutable borrow later used here
+
+Some errors have detailed explanations: E0046, E0277, E0308, E0382, E0407, E0425, E0433, E0499, E0502...
+For more information about an error, try `rustc --explain E0046`.
+warning: `reaction-player` (lib) generated 8 warnings
+error: could not compile `reaction-player` (lib) due to 56 previous errors; 8 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: unused variable: `root`
+   --> src/model/store.rs:569:21
+    |
+569 |         let (store, root) = store("layout");
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_root`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `reaction-player` (lib test) generated 9 warnings (8 duplicates)
+error: could not compile `reaction-player` (lib test) due to 57 previous errors; 9 warnings emitted
+check exit: 101
+
+===== cargo test =====
+   Compiling reaction-player v0.1.0 (/__w/ReactPlayer-Rust/ReactPlayer-Rust)
+error[E0407]: method `update` is not a member of trait `eframe::App`
+    --> src/app.rs:1402:5
+     |
+1402 | /     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+1403 | |         let now = now_ms();
+1404 | |         self.toasts.tick(now);
+1405 | |         self.handle_dropped(ctx);
+...    |
+1449 | |     }
+     | |_____^ not a member of trait `eframe::App`
+
+error[E0433]: cannot find `BuildStreamError` in `cpal`
+   --> src/engine/audio.rs:221:38
+    |
+221 |                     return Err(cpal::BuildStreamError::StreamConfigNotSupported);
+    |                                      ^^^^^^^^^^^^^^^^ could not find `BuildStreamError` in `cpal`
+
+error[E0433]: cannot find `TopBottomPanel` in `egui`
+  --> src/ui/screens/player.rs:74:11
+   |
+74 |     egui::TopBottomPanel::top("player-top")
+   |           ^^^^^^^^^^^^^^ could not find `TopBottomPanel` in `egui`
+
+error[E0433]: cannot find `TopBottomPanel` in `egui`
+   --> src/ui/screens/player.rs:685:11
+    |
+685 |     egui::TopBottomPanel::bottom("transport")
+    |           ^^^^^^^^^^^^^^ could not find `TopBottomPanel` in `egui`
+
+error[E0433]: cannot find `SidePanel` in `egui`
+   --> src/ui/screens/player.rs:950:11
+    |
+950 |     egui::SidePanel::right("layers")
+    |           ^^^^^^^^^ could not find `SidePanel` in `egui`
+
+error[E0433]: cannot find `TopBottomPanel` in `egui`
+  --> src/ui/screens/studio.rs:44:11
+   |
+44 |     egui::TopBottomPanel::top("studio-controls")
+   |           ^^^^^^^^^^^^^^ could not find `TopBottomPanel` in `egui`
+
+error[E0433]: cannot find `TopBottomPanel` in `egui`
+  --> src/ui/screens/mod.rs:22:11
+   |
+22 |     egui::TopBottomPanel::top("chrome")
+   |           ^^^^^^^^^^^^^^ could not find `TopBottomPanel` in `egui`
+
+error[E0425]: cannot find type `BuildStreamError` in crate `cpal`
+   --> src/engine/audio.rs:195:66
+    |
+195 |         let build = |mixer: Mixer| -> Result<cpal::Stream, cpal::BuildStreamError> {
+    |                                                                  ^^^^^^^^^^^^^^^^ not found in `cpal`
+
+error[E0425]: cannot find value `SWS_BILINEAR` in crate `ffi`
+   --> src/engine/track.rs:929:26
+    |
+929 |                     ffi::SWS_BILINEAR as c_int,
+    |                          ^^^^^^^^^^^^ not found in `ffi`
+
+error[E0425]: cannot find value `AV_FRAME_DATA_DISPLAYMATRIX` in crate `ffi`
+    --> src/engine/track.rs:1072:60
+     |
+1072 |         let side = ffi::av_frame_get_side_data(frame, ffi::AV_FRAME_DATA_DISPLAYMATRIX);
+     |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `ffi`
+
+error[E0425]: cannot find value `VERSION` in crate `eframe::egui`
+   --> src/ui/screens/settings.rs:199:43
+    |
+199 | ...                   eframe::egui::VERSION
+    |                                     ^^^^^^^ not found in `eframe::egui`
+
+warning: unused import: `Producer`
+  --> src/engine/audio.rs:18:43
+   |
+18 | use ringbuf::traits::{Consumer, Observer, Producer, Split};
+   |                                           ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0046]: not all trait items implemented, missing: `ui`
+    --> src/app.rs:1397:1
+     |
+1397 | impl eframe::App for App {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^ missing `ui` in implementation
+     |
+     = help: implement the missing item: `fn ui(&mut self, _: &mut Ui, _: &mut eframe::Frame) { todo!() }`
+
+error[E0615]: attempted to take value of method `path` on type `&Arc<dyn DroppedFile + Send + Sync>`
+   --> src/app.rs:947:41
+    |
+947 |                 .filter_map(|file| file.path.clone())
+    |                                         ^^^^ method, not a field
+    |
+help: use parentheses to call the method
+    |
+947 |                 .filter_map(|file| file.path().clone())
+    |                                             ++
+
+error[E0599]: no method named `screen_rect` found for reference `&eframe::egui::Context` in the current scope
+    --> src/app.rs:1375:24
+     |
+1375 |         let rect = ctx.screen_rect().shrink(24.0);
+     |                        ^^^^^^^^^^^ method not found in `&eframe::egui::Context`
+
+warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
+    --> src/app.rs:1378:23
+     |
+1378 |             egui::Id::new("drop-overlay"),
+     |                       ^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+error[E0560]: struct `NativeOptions` has no field named `vsync`
+    --> src/app.rs:1499:9
+     |
+1499 |         vsync: true,
+     |         ^^^^^ `NativeOptions` does not have this field
+     |
+     = note: available fields are: `run_and_return`, `event_loop_builder`, `window_builder`, `centered`, `wgpu_options` ... and 5 others
+
+error[E0599]: no method named `name` found for struct `cpal::Device` in the current scope
+   --> src/engine/audio.rs:159:14
+    |
+158 |         let device_name = device
+159 |             .name()
+    |              ^^^^
+    |
+help: there is a method `ne` with a similar name, but with different arguments
+   --> library/core/src/cmp.rs:278:4
+
+error[E0610]: `u32` is a primitive type and therefore doesn't have fields
+   --> src/engine/audio.rs:179:39
+    |
+179 |         let rate = config.sample_rate.0;
+    |                                       ^
+
+error[E0308]: mismatched types
+   --> src/engine/audio.rs:188:13
+    |
+188 |             channels,
+    |             ^^^^^^^^ expected `usize`, found `u16`
+    |
+help: you can convert a `u16` to a `usize`
+    |
+188 |             channels: channels.into(),
+    |             +++++++++         +++++++
+
+error[E0308]: mismatched types
+   --> src/engine/audio.rs:199:21
+    |
+198 |                 SampleFormat::F32 => device.build_output_stream(
+    |                                             ------------------- arguments to this method are incorrect
+199 |                     &config,
+    |                     ^^^^^^^ expected `StreamConfig`, found `&StreamConfig`
+    |
+note: method defined here
+   --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cpal-0.18.2/src/traits.rs:318:8
+    |
+318 |     fn build_output_stream<T, D, E>(
+    |        ^^^^^^^^^^^^^^^^^^^
+help: consider removing the borrow
+    |
+199 -                     &config,
+199 +                     config,
+    |
+
+error[E0308]: mismatched types
+   --> src/engine/audio.rs:206:25
+    |
+205 |                     device.build_output_stream(
+    |                            ------------------- arguments to this method are incorrect
+206 |                         &config,
+    |                         ^^^^^^^ expected `StreamConfig`, found `&StreamConfig`
+    |
+note: method defined here
+   --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cpal-0.18.2/src/traits.rs:318:8
+    |
+318 |     fn build_output_stream<T, D, E>(
+    |        ^^^^^^^^^^^^^^^^^^^
+help: consider removing the borrow
+    |
+206 -                         &config,
+206 +                         config,
+    |
+
+error[E0615]: attempted to take value of method `path` on type `&ringbuf::Arc<dyn DroppedFile + Send + Sync>`
+   --> src/app.rs:947:41
+    |
+947 |                 .filter_map(|file| file.path.clone())
+    |                                         ^^^^ method, not a field
+    |
+help: use parentheses to call the method
+    |
+947 |                 .filter_map(|file| file.path().clone())
+    |                                             ++
+
+error[E0308]: mismatched types
+   --> src/engine/audio.rs:214:25
+    |
+213 |                     device.build_output_stream(
+    |                            ------------------- arguments to this method are incorrect
+214 |                         &config,
+    |                         ^^^^^^^ expected `StreamConfig`, found `&StreamConfig`
+    |
+note: method defined here
+   --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cpal-0.18.2/src/traits.rs:318:8
+    |
+318 |     fn build_output_stream<T, D, E>(
+    |        ^^^^^^^^^^^^^^^^^^^
+help: consider removing the borrow
+    |
+214 -                         &config,
+214 +                         config,
+    |
+
+error[E0308]: mismatched types
+   --> src/engine/track.rs:368:13
+    |
+368 |             senders,
+    |             ^^^^^^^ expected `Vec<Sender<Command>>`, found `Vec<SyncSender<Command>>`
+    |
+    = note: expected struct `Vec<std::sync::mpsc::Sender<track::Command>>`
+               found struct `Vec<SyncSender<track::Command>>`
+
+error[E0599]: no method named `try_send` found for reference `&std::sync::mpsc::Sender<track::Command>` in the current scope
+   --> src/engine/track.rs:386:64
+    |
+386 |             if let Err(TrySendError::Disconnected(_)) = sender.try_send(command) {
+    |                                                                ^^^^^^^^
+    |
+help: there is a method `send` with a similar name
+    |
+386 -             if let Err(TrySendError::Disconnected(_)) = sender.try_send(command) {
+386 +             if let Err(TrySendError::Disconnected(_)) = sender.send(command) {
+    |
+
+error[E0308]: mismatched types
+     --> src/engine/track.rs:925:21
+      |
+  922 |                 ffi::sws_getContext(
+      |                 ------------------- arguments to this function are incorrect
+...
+  925 |                     format,
+      |                     ^^^^^^ expected `AVPixelFormat`, found `i32`
+      |
+note: function defined here
+     --> /__w/ReactPlayer-Rust/ReactPlayer-Rust/target/debug/build/ffmpeg-sys-next/f6519a25b5c73838/out/bindings.rs:15631:12
+      |
+15631 |     pub fn sws_getContext(
+      |            ^^^^^^^^^^^^^^
+
+error[E0308]: `if` and `else` have incompatible types
+    --> src/engine/track.rs:1018:17
+     |
+1009 | /             if ptr.is_null() || stride == 0 {
+1010 | |                 (ptr::null(), 0)
+     | |                 ---------------- expected because of this
+1011 | |             } else {
+1012 | |                 let packed = (stride.unsigned_abs() as usize).max(plane_w as usize);
+...    |
+1018 | |                 (base, packed)
+     | |                 ^^^^^^^^^^^^^^ types differ in mutability
+1019 | |             }
+     | |_____________- `if` and `else` have incompatible types
+     |
+     = note: expected tuple `(*const _, {integer})`
+                found tuple `(*mut u8, usize)`
+
+error[E0308]: mismatched types
+   --> src/gpu/renderer.rs:303:18
+    |
+303 |             .max(crate::gpu::UNIFORM_STRIDE) as usize;
+    |              --- ^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `u32`, found `u64`
+    |              |
+    |              arguments to this method are incorrect
+    |
+help: the return type of this call is `u64` due to the type of the argument passed
+   --> src/gpu/renderer.rs:300:30
+    |
+300 |           let uniform_stride = device
+    |  ______________________________^
+301 | |             .limits()
+302 | |             .min_uniform_buffer_offset_alignment
+303 | |             .max(crate::gpu::UNIFORM_STRIDE) as usize;
+    | |__________________--------------------------^
+    |                    |
+    |                    this argument influences the return type of `max`
+note: method defined here
+   --> library/core/src/cmp.rs:1097:7
+note: the `max` call is resolved to the method in `std::cmp::Ord`, shadowing the method of the same name on trait `std::iter::Iterator`
+   --> src/gpu/renderer.rs:303:14
+    |
+303 |             .max(crate::gpu::UNIFORM_STRIDE) as usize;
+    |              ^^^ refers to `std::cmp::Ord::max`
+    = note: additionally, there are 4 other available methods that aren't in scope
+help: you can convert a `u64` to a `u32` and panic if the converted value doesn't fit
+    |
+303 |             .max(crate::gpu::UNIFORM_STRIDE.try_into().unwrap()) as usize;
+    |                                            ++++++++++++++++++++
+help: you might have meant to call one of the other methods; you can use the fully-qualified path to call one of them explicitly
+    |
+300 ~         let uniform_stride = <_ as fearless_simd::generated::simd_trait::SimdFloat<_>>::max::<_>(device
+301 |             .limits()
+302 ~             .min_uniform_buffer_offset_alignment, crate::gpu::UNIFORM_STRIDE) as usize;
+    |
+300 ~         let uniform_stride = <_ as fearless_simd::generated::simd_trait::SimdInt<_>>::max::<_>(device
+301 |             .limits()
+302 ~             .min_uniform_buffer_offset_alignment, crate::gpu::UNIFORM_STRIDE) as usize;
+    |
+300 ~         let uniform_stride = <_ as num_traits::float::FloatCore>::max(device
+301 |             .limits()
+302 ~             .min_uniform_buffer_offset_alignment, crate::gpu::UNIFORM_STRIDE) as usize;
+    |
+300 ~         let uniform_stride = <_ as num_traits::float::Float>::max(device
+301 |             .limits()
+302 ~             .min_uniform_buffer_offset_alignment, crate::gpu::UNIFORM_STRIDE) as usize;
+    |
+    = and 1 other candidate
+
+error[E0308]: mismatched types
+    --> src/ui/screens/home.rs:15:15
+     |
+  15 |         .show(ctx, |ui| {
+     |          ---- ^^^ types differ in mutability
+     |          |
+     |          arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+error[E0308]: mismatched types
+    --> src/ui/screens/player.rs:36:19
+     |
+  36 |             .show(ctx, |ui| {
+     |              ---- ^^^ types differ in mutability
+     |              |
+     |              arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+error[E0308]: mismatched types
+    --> src/ui/screens/player.rs:179:15
+     |
+ 179 |         .show(ctx, |ui| {
+     |          ---- ^^^ types differ in mutability
+     |          |
+     |          arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
+    --> src/ui/screens/player.rs:1015:43
+     |
+1015 | ...                   egui::Id::new(("layer-drag", id_for_drag.clone())),
+     |                                 ^^^
+
+error[E0277]: the size for values of type `str` cannot be known at compilation time
+    --> src/ui/screens/player.rs:1069:24
+     |
+1069 |                 if let Some(dragged) = drop {
+     |                        ^^^^^^^^^^^^^ doesn't have a size known at compile-time
+     |
+     = help: the trait `Sized` is not implemented for `str`
+note: required by a bound in `Some`
+    --> library/core/src/option.rs:606:4
+
+error[E0308]: mismatched types
+    --> src/ui/screens/presets.rs:22:15
+     |
+  22 |         .show(ctx, |ui| {
+     |          ---- ^^^ types differ in mutability
+     |          |
+     |          arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+error[E0308]: mismatched types
+    --> src/ui/screens/sessions.rs:20:15
+     |
+  20 |         .show(ctx, |ui| {
+     |          ---- ^^^ types differ in mutability
+     |          |
+     |          arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
+   --> src/ui/screens/sessions.rs:234:91
+    |
+234 |     if let Some(texture) = ctx.data(|data| data.get_temp::<egui::TextureHandle>(egui::Id::new(&key)))
+    |                                                                                           ^^^
+
+warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
+   --> src/ui/screens/sessions.rs:242:52
+    |
+242 |     ctx.data_mut(|data| data.insert_temp(egui::Id::new(&key), texture.clone()));
+    |                                                    ^^^
+
+error[E0599]: no variant, associated function, or constant named `Software` found for enum `HwAccelPref` in the current scope
+  --> src/ui/screens/settings.rs:37:70
+   |
+37 |                         for pref in [HwAccelPref::Auto, HwAccelPref::Software] {
+   |                                                                      ^^^^^^^^ variant, associated function, or constant not found in `HwAccelPref`
+   |
+  ::: src/model/settings.rs:16:1
+   |
+16 | pub enum HwAccelPref {
+   | -------------------- variant, associated function, or constant `Software` not found for this enum
+
+error[E0308]: mismatched types
+    --> src/ui/screens/settings.rs:21:15
+     |
+  21 |         .show(ctx, |ui| {
+     |          ---- ^^^ types differ in mutability
+     |          |
+     |          arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+error[E0308]: mismatched types
+    --> src/ui/screens/studio.rs:24:19
+     |
+  24 |             .show(ctx, |ui| {
+     |              ---- ^^^ types differ in mutability
+     |              |
+     |              arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+error[E0308]: mismatched types
+    --> src/ui/screens/studio.rs:165:15
+     |
+ 165 |         .show(ctx, |ui| {
+     |          ---- ^^^ types differ in mutability
+     |          |
+     |          arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Ui`
+                        found reference `&eframe::egui::Context`
+note: method defined here
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/panel.rs:1377:12
+     |
+1377 |     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+     |            ^^^^
+
+error[E0599]: no method named `screen_rect` found for reference `&eframe::egui::Context` in the current scope
+  --> src/ui/screens/mod.rs:81:24
+   |
+81 |         egui::vec2(ctx.screen_rect().width(), 1.0),
+   |                        ^^^^^^^^^^^ method not found in `&eframe::egui::Context`
+
+warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
+  --> src/ui/screens/mod.rs:85:19
+   |
+85 |         egui::Id::new("chrome-rule"),
+   |                   ^^^
+
+error[E0599]: no method named `wants_keyboard_input` found for reference `&eframe::egui::Context` in the current scope
+   --> src/ui/shortcuts.rs:179:12
+    |
+179 |     if ctx.wants_keyboard_input() {
+    |            ^^^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `egui_wants_keyboard_input` with a similar name
+    |
+179 |     if ctx.egui_wants_keyboard_input() {
+    |            +++++
+
+error[E0599]: no method named `style` found for reference `&eframe::egui::Context` in the current scope
+    --> src/ui/theme.rs:67:27
+     |
+  67 |     let mut style = (*ctx.style()).clone();
+     |                           ^^^^^
+     |
+help: there is a method `style_of` with a similar name, but with different arguments
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/context.rs:2645:5
+     |
+2645 |     pub fn style_of(&self, theme: Theme) -> Arc<Style> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `set_style` found for reference `&eframe::egui::Context` in the current scope
+    --> src/ui/theme.rs:79:9
+     |
+  79 |     ctx.set_style(style);
+     |         ^^^^^^^^^
+     |
+help: there is a method `set_style_of` with a similar name, but with different arguments
+    --> /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/context.rs:2674:5
+     |
+2674 |     pub fn set_style_of(&self, theme: Theme, style: impl Into<Arc<Style>>) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated field `eframe::egui::Visuals::clip_rect_margin`: This is now unused and has no effect
+   --> src/ui/theme.rs:136:5
+    |
+136 |     v.clip_rect_margin = 0.0;
+    |     ^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `screen_rect` found for reference `&eframe::egui::Context` in the current scope
+   --> src/ui/toast.rs:102:26
+    |
+102 |         let screen = ctx.screen_rect();
+    |                          ^^^^^^^^^^^ method not found in `&eframe::egui::Context`
+
+warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
+   --> src/ui/toast.rs:104:35
+    |
+104 |         egui::Area::new(egui::Id::new("toasts"))
+    |                                   ^^^
+
+error[E0507]: cannot move out of a shared reference
+   --> src/engine/runtime.rs:130:9
+    |
+130 |         *self.audio.status()
+    |         ^^^^^^^^^^^^^^^^^^^^ move occurs because value has type `AudioStatus`, which does not implement the `Copy` trait
+    |
+help: consider cloning the value if the performance cost is acceptable
+    |
+130 -         *self.audio.status()
+130 +         self.audio.status().clone()
+    |
+
+error[E0599]: no variant, associated function, or constant named `Software` found for enum `model::settings::HwAccelPref` in the current scope
+  --> src/ui/screens/settings.rs:37:70
+   |
+37 |                         for pref in [HwAccelPref::Auto, HwAccelPref::Software] {
+   |                                                                      ^^^^^^^^ variant, associated function, or constant not found in `model::settings::HwAccelPref`
+   |
+  ::: src/model/settings.rs:16:1
+   |
+16 | pub enum HwAccelPref {
+   | -------------------- variant, associated function, or constant `Software` not found for this enum
+
+error[E0499]: cannot borrow `*self` as mutable more than once at a time
+   --> src/engine/track.rs:542:43
+    |
+537 |                 if let Some(decoder) = self.decoder.as_mut() {
+    |                                        ------------ first mutable borrow occurs here
+...
+542 |                     if let Err(message) = self.seek_to(decoder, target_us) {
+    |                                           ^^^^         ------- first borrow later used here
+    |                                           |
+    |                                           second mutable borrow occurs here
+
+error[E0499]: cannot borrow `*self` as mutable more than once at a time
+   --> src/engine/track.rs:557:43
+    |
+555 |                 if let Some(decoder) = self.decoder.as_mut() {
+    |                                        ------------ first mutable borrow occurs here
+556 |                     self.shared.epoch.fetch_add(1, Ordering::AcqRel);
+557 |                     if let Err(message) = self.seek_to(decoder, target) {
+    |                                           ^^^^         ------- first borrow later used here
+    |                                           |
+    |                                           second mutable borrow occurs here
+
+error[E0596]: cannot borrow `context` as mutable, as it is not declared as mutable
+   --> src/engine/track.rs:725:35
+    |
+725 |                     let ctx_ptr = context.as_mut_ptr();
+    |                                   ^^^^^^^ cannot borrow as mutable
+    |
+help: consider changing this to be mutable
+    |
+720 |                 let mut context =
+    |                     +++
+
+error[E0382]: use of moved value: `order`
+   --> src/model/presets.rs:330:38
+    |
+320 |     let order = session.paint_order();
+    |         ----- move occurs because `order` has type `std::vec::Vec<usize>`, which does not implement the `Copy` trait
+321 |     for (slot_index, layer_index) in order.into_iter().enumerate() {
+    |                                            ----------- `order` moved due to this method call
+...
+330 |     for (slot_index, layer_index) in order.into_iter().enumerate() {
+    |                                      ^^^^^ value used here after move
+    |
+note: `std::iter::IntoIterator::into_iter` takes ownership of the receiver `self`, which moves `order`
+   --> library/core/src/iter/traits/collect.rs:312:17
+help: you can `clone` the value and consume it, but this might not be your desired behavior
+    |
+321 |     for (slot_index, layer_index) in order.clone().into_iter().enumerate() {
+    |                                           ++++++++
+
+error[E0631]: type mismatch in function arguments
+   --> src/ui/toast.rs:179:38
+    |
+179 |         assert_eq!(toasts.last().map(String::as_str), Some("message 5"));
+    |                                  --- ^^^^^^^^^^^^^^
+    |                                  |   |
+    |                                  |   expected due to this
+    |                                  |   found signature defined here
+    |                                  required by a bound introduced by this call
+    |
+    = note: expected function signature `fn(&Toast) -> _`
+               found function signature `fn(&std::string::String) -> _`
+note: required by a bound in `std::option::Option::<T>::map`
+   --> library/core/src/option.rs:1160:4
+help: consider wrapping the function in a closure
+    |
+179 |         assert_eq!(toasts.last().map(|arg0: &Toast| String::as_str(/* &std::string::String */)), Some("message 5"));
+    |                                      ++++++++++++++               ++++++++++++++++++++++++++++
+
+error[E0507]: cannot move out of a shared reference
+   --> src/engine/runtime.rs:130:9
+    |
+130 |         *self.audio.status()
+    |         ^^^^^^^^^^^^^^^^^^^^ move occurs because value has type `engine::audio::AudioStatus`, which does not implement the `Copy` trait
+    |
+help: consider cloning the value if the performance cost is acceptable
+    |
+130 -         *self.audio.status()
+130 +         self.audio.status().clone()
+    |
+
+error[E0502]: cannot borrow `*app` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:558:9
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+558 |         app.copy_frame();
+    |         ^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+594 |     let mut crop = session.layer(&id).map(|layer| layer.crop).unwrap_or(Crop::ZERO);
+    |                    ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:563:32
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+563 |         if let Some(session) = app.session.as_mut() {
+    |                                ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+594 |     let mut crop = session.layer(&id).map(|layer| layer.crop).unwrap_or(Crop::ZERO);
+    |                    ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:570:32
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+570 |         if let Some(session) = app.session.as_mut() {
+    |                                ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+594 |     let mut crop = session.layer(&id).map(|layer| layer.crop).unwrap_or(Crop::ZERO);
+    |                    ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:577:32
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+577 |         if let Some(session) = app.session.as_mut() {
+    |                                ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+594 |     let mut crop = session.layer(&id).map(|layer| layer.crop).unwrap_or(Crop::ZERO);
+    |                    ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:584:32
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+584 |         if let Some(session) = app.session.as_mut() {
+    |                                ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+594 |     let mut crop = session.layer(&id).map(|layer| layer.crop).unwrap_or(Crop::ZERO);
+    |                    ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:601:30
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+601 |         if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
+    |                              ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+607 |     let mut opacity = session.layer(&id).map(|layer| layer.opacity).unwrap_or(1.0);
+    |                       ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:609:30
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+609 |         if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
+    |                              ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+614 |     let fit = session.layer(&id).map(|layer| layer.fit).unwrap_or(FitMode::Contain);
+    |               ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:616:30
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+616 |         if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
+    |                              ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+621 |     let mut master = session.master_audio.clone();
+    |                      -------------------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:631:32
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+631 |         if let Some(session) = app.session.as_mut() {
+    |                                ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+638 |     let locked = session.layer(&id).map(|layer| layer.locked).unwrap_or(false);
+    |                  ------- immutable borrow later used here
+
+error[E0502]: cannot borrow `app.session` as mutable because it is also borrowed as immutable
+   --> src/ui/screens/player.rs:643:30
+    |
+547 |     let Some(session) = app.session.as_ref() else {
+    |                         ----------- immutable borrow occurs here
+...
+643 |         if let Some(layer) = app.session.as_mut().and_then(|s| s.layer_mut(&id)) {
+    |                              ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+648 |     let visible = session.layer(&id).map(|layer| layer.visible).unwrap_or(true);
+    |                   ------- immutable borrow later used here
+
+Some errors have detailed explanations: E0046, E0277, E0308, E0382, E0407, E0425, E0433, E0499, E0502...
+For more information about an error, try `rustc --explain E0046`.
+warning: `reaction-player` (lib) generated 8 warnings
+error: could not compile `reaction-player` (lib) due to 56 previous errors; 8 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: unused variable: `root`
+   --> src/model/store.rs:569:21
+    |
+569 |         let (store, root) = store("layout");
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_root`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `reaction-player` (lib test) generated 9 warnings (8 duplicates)
+error: could not compile `reaction-player` (lib test) due to 57 previous errors; 9 warnings emitted
+test exit: 101
+
+===== warning count =====
+14
