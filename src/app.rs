@@ -195,6 +195,13 @@ pub struct App {
     /// Whether `ffmpeg` was found on `PATH` when the app started. Only the demo
     /// needs it, and the home screen says so before it is clicked.
     pub ffmpeg_ready: bool,
+    /// What the open session looked like when it was last written, so edits
+    /// made on the canvas can be saved without asking.
+    saved_json: Option<String>,
+    /// When the session last differed from `saved_json`, and when it was last
+    /// compared. Both are `None` until something changes.
+    changed_at: Option<std::time::Instant>,
+    checked_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -239,6 +246,9 @@ impl App {
             probed: Vec::new(),
             quit_saved: false,
             ffmpeg_ready: crate::engine::demo::ffmpeg_on_path(),
+            saved_json: None,
+            changed_at: None,
+            checked_at: None,
         };
         app.reload_wallpaper(&cc.egui_ctx);
         // Continue where the last run left off, on the home screen.
@@ -345,6 +355,10 @@ impl App {
         self.save_settings();
         self.theater = false;
         self.layers_panel = true;
+        // Nothing to autosave yet: the file on disk is what was just loaded.
+        self.saved_json = self.session_json();
+        self.changed_at = None;
+        self.checked_at = None;
     }
 
     pub fn close_session(&mut self) {
@@ -358,6 +372,66 @@ impl App {
         self.screen = Screen::Home;
         self.settings.last_session = None;
         self.save_settings();
+    }
+
+    /// The open session as JSON, the same bytes the store writes.
+    fn session_json(&self) -> Option<String> {
+        let session = self.session.as_ref()?;
+        serde_json::to_string(session).ok()
+    }
+
+    /// Write the session a moment after the last edit, so a crash or a hard
+    /// kill does not cost the user the rectangle they just dragged.
+    ///
+    /// The thumbnail is deliberately left to explicit saves: it is a GPU
+    /// readback, and doing that while someone drags would be visible.
+    fn autosave(&mut self, ctx: &egui::Context) {
+        let Some(json) = self.session_json() else {
+            return;
+        };
+        if self.saved_json.as_deref() == Some(json.as_str()) {
+            self.changed_at = None;
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self
+            .checked_at
+            .map(|last| now.duration_since(last) < Duration::from_millis(400))
+            .unwrap_or(false)
+        {
+            ctx.request_repaint_after(Duration::from_millis(200));
+            return;
+        }
+        self.checked_at = Some(now);
+        let Some(changed) = self.changed_at else {
+            // First sighting of this edit: wait for the user's hand to stop.
+            self.changed_at = Some(now);
+            ctx.request_repaint_after(Duration::from_millis(1_000));
+            return;
+        };
+        if now.duration_since(changed) < Duration::from_millis(900) {
+            ctx.request_repaint_after(Duration::from_millis(400));
+            return;
+        }
+        let Some(mut copy) = self.session.as_ref().cloned() else {
+            return;
+        };
+        match self.store.save_session(&mut copy) {
+            Ok(()) => {
+                self.saved_json = Some(json);
+                self.changed_at = None;
+                if let Some(open) = self.session.as_mut() {
+                    open.updated_at = copy.updated_at;
+                }
+            }
+            Err(message) => {
+                // Say it once and stop retrying this exact content: a read-only
+                // disk must not turn into a toast every second.
+                self.toasts.error(format!("Could not save: {message}"));
+                self.saved_json = Some(json);
+                self.changed_at = None;
+            }
+        }
     }
 
     /// Save the open session, its thumbnail and the preferences.
@@ -383,6 +457,8 @@ impl App {
                     open.thumbnail = session.thumbnail.clone();
                 }
                 self.refresh_sessions();
+                self.saved_json = self.session_json();
+                self.changed_at = None;
             }
             Err(message) => self.toasts.error(format!("Could not save: {message}")),
         }
@@ -1504,6 +1580,7 @@ impl eframe::App for App {
             self.apply_action(action, &ctx);
         }
         self.pump_engine();
+        self.autosave(&ctx);
 
         match self.screen {
             Screen::Home => screens::home::show(self, ui),
