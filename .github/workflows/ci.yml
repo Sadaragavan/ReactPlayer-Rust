@@ -1,6 +1,11 @@
 name: ci
 on:
   push:
+    # The job commits its own log back as ci-log.txt. Without this, that commit
+    # starts a second run which commits a log which starts a third, and every
+    # failure would be mailed twice.
+    paths-ignore:
+      - ci-log.txt
   workflow_dispatch:
 
 permissions:
