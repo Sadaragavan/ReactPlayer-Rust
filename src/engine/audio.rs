@@ -35,8 +35,8 @@ pub struct PcmChunk {
     pub pts_us: i64,
     /// Seek epoch at push time. The callback drops chunks from older epochs.
     pub epoch: u64,
-    /// Volume applied by the producer (kept for completeness; the callback
-    /// applies the live volume instead).
+    /// Producer-side gain, applied in [`AudioRing::push_audio`]. The mixer
+    /// applies the session/mute volume on top of this.
     pub volume: f32,
     /// Interleaved stereo samples.
     pub samples: Vec<f32>,
@@ -129,7 +129,17 @@ impl AudioRing {
         // is published through the shared atomic instead of a per-chunk header
         // (`mark_seek`). Partial writes are fine: the consumer simply reads
         // whatever is available and pads the rest with silence.
-        let _ = prod.push_slice(&chunk.samples);
+        //
+        // Unity gain is the common case, so the scaling pass is skipped rather
+        // than copying the whole chunk to multiply it by 1.0.
+        if (chunk.volume - 1.0).abs() < f32::EPSILON {
+            let _ = prod.push_slice(&chunk.samples);
+        } else {
+            // Scale into a scratch copy and push once: pushing sample by sample
+            // would take the ring's cursor bookkeeping path N times per chunk.
+            let scaled: Vec<f32> = chunk.samples.iter().map(|s| s * chunk.volume).collect();
+            let _ = prod.push_slice(&scaled);
+        }
     }
 
     /// Number of stereo frames buffered (approximate, for the UI meter).
@@ -436,8 +446,13 @@ impl AudioEngine {
     }
 
     /// Add a track's consumer to the mixer. Call before the track produces.
+    ///
+    /// Replaces any existing consumer for the same layer id: `insert_layer` is
+    /// documented as insert-or-replace, and appending a second consumer would
+    /// play the layer twice and mix two independent drift resamplers.
     pub fn add_source(&self, layer_id: u64, consumer: AudioConsumer) {
         if let Ok(mut g) = self.sources.lock() {
+            g.retain(|s| s.layer_id != layer_id);
             g.push(MixSource {
                 consumer,
                 layer_id,
