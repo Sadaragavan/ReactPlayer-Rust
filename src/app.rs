@@ -659,7 +659,12 @@ impl eframe::App for App {
         self.egui_ctx = ctx.clone();
 
         self.poll_probes();
-        self.runtime.tick();
+        // Session-aware tick: pulls frames *and* runs the two coordination
+        // loops the session-less `tick` cannot -- `route_audio` (which layer is
+        // audible) and `handle_drift` (correct a layer whose PTS has wandered).
+        // `runtime` and `session` are disjoint fields, so this borrows rather
+        // than cloning the session every frame.
+        self.runtime.tick_with_session(&self.session);
         self.handle_keys(&ctx);
 
         // Panels are drawn back-to-front so the central canvas sees the space
