@@ -186,6 +186,14 @@ impl Runtime {
     /// Insert or replace a layer state.
     pub fn insert_layer(&mut self, state: LayerState) {
         let id = state.id;
+        // Connect the track's ring buffer to the mixer before it can produce
+        // anything. Without this the decode worker writes PcmChunks into a ring
+        // nobody drains and the app is silent; the callback-side mixer only
+        // knows about sources registered here.
+        if let Some(ring) = state.track.audio() {
+            let consumer = ring.attach_consumer();
+            self.audio.add_source(id, consumer);
+        }
         self.layers.insert(id, state);
         if self.master_audio.is_none() {
             self.master_audio = Some(id);
@@ -459,6 +467,41 @@ impl Runtime {
             lent,
         };
         self.routing
+    }
+
+    /// One UI tick: pull the newest frames, expire stale seeks, steer audio and
+    /// correct drift.
+    ///
+    /// This is the real per-frame entry point; `tick` is the session-less form
+    /// used by tests. The two coordination loops that keep picture and sound
+    /// together both live here:
+    ///
+    /// * `route_audio` picks which layer is audible at `t` and mutes the rest.
+    /// * `handle_drift` nudges or seeks a layer whose decoded PTS has wandered
+    ///   away from the master clock.
+    ///
+    /// Both were previously defined but never called, so every layer was silent
+    /// and nothing corrected drift.
+    pub fn tick_with_session(&mut self, session: &Session) -> HashMap<u64, LayerPresentation> {
+        let out = self.tick();
+        let t = self.clock.position_us();
+        self.route_audio(t, session);
+        // Correct drift for every layer that has a presented frame. A layer
+        // holding a still has nothing to correct against, and `handle_drift`
+        // already ignores pending seeks.
+        let ids: Vec<u64> = self.layers.keys().copied().collect();
+        for id in ids {
+            let Some(pts) = self
+                .layers
+                .get(&id)
+                .and_then(|s| s.presented.as_ref())
+                .map(|p| p.frame.pts_us)
+            else {
+                continue;
+            };
+            self.handle_drift(id, pts, t);
+        }
+        out
     }
 
     /// One UI tick: pull the newest frames, expire stale seeks and return the

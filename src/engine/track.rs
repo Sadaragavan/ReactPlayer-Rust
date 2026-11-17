@@ -1109,10 +1109,18 @@ impl Worker {
                 .map(|t| t.rescale(self.audio_tb, (1, 1_000_000)))
                 .unwrap_or(0);
             let epoch = self.shared.seek_epoch.load(Ordering::Acquire);
+            // The track's own gain, applied here rather than left at 1.0. The
+            // mixer applies the session volume on top; keeping this non-trivial
+            // means `set_volume`/`set_muted` are not silently ignored.
+            let gain = if self.shared.muted.load(Ordering::Relaxed) {
+                0.0
+            } else {
+                f32::from_bits(self.shared.volume_bits.load(Ordering::Relaxed))
+            };
             self.audio.push_audio(PcmChunk {
                 pts_us,
                 epoch,
-                volume: 1.0,
+                volume: gain,
                 samples: pcm,
             });
         }
