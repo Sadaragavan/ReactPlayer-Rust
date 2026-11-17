@@ -2,38 +2,38 @@
     Updating crates.io index
      Locking 354 packages to highest Rust 1.95 compatible versions
     Checking reaction-player v0.1.0 (/__w/ReactPlayer-Rust/ReactPlayer-Rust)
-    Finished `dev` profile [optimized + debuginfo] target(s) in 2.00s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 3.78s
 check exit: 0
 
 ===== cargo test =====
    Compiling reaction-player v0.1.0 (/__w/ReactPlayer-Rust/ReactPlayer-Rust)
-    Finished `test` profile [optimized + debuginfo] target(s) in 22.66s
+    Finished `test` profile [optimized + debuginfo] target(s) in 17.44s
      Running unittests src/lib.rs (target/debug/build/reaction-player/a7b560b0bcc6c8c0/out/reaction_player-a7b560b0bcc6c8c0)
 
 running 139 tests
 test app::tests::slot_summary_reads_like_a_layout ... ok
-test app::tests::slugs_are_file_name_safe ... ok
-test engine::audio::tests::epoch_bumps_monotonically ... ok
 test app::tests::studio_delta_uses_b_minus_a ... ok
+test engine::audio::tests::epoch_bumps_monotonically ... ok
+test app::tests::slugs_are_file_name_safe ... ok
 test engine::audio::tests::slots_start_inactive_and_unmuted ... ok
 test engine::audio::tests::status_text_is_human ... ok
 test engine::audio::tests::volume_and_mute_are_clamped ... ok
-test engine::audio_resample::tests::odd_input_lengths_are_ignored_safely ... ok
 test engine::audio_resample::tests::chunks_join_without_a_discontinuity ... ok
 test engine::audio_resample::tests::passthrough_is_bit_exact ... ok
-test engine::audio_resample::tests::rate_is_clamped_to_the_nudge_band ... ok
+test engine::audio_resample::tests::odd_input_lengths_are_ignored_safely ... ok
 test engine::audio_resample::tests::a_faster_rate_plays_the_same_input_in_less_time ... ok
 test engine::audio_resample::tests::a_slower_rate_stretches_the_same_input ... ok
 test engine::audio_resample::tests::reset_forgets_the_tail ... ok
 test engine::demo::tests::demo_session_offsets_the_reaction_by_the_flash ... ok
+test engine::audio_resample::tests::rate_is_clamped_to_the_nudge_band ... ok
 test engine::demo::tests::ffmpeg_commands_carry_the_landmark ... ok
 test engine::demo::tests::missing_clips_are_not_ready ... ok
-test engine::hwaccel::tests::badges_match_the_spec ... ok
 test engine::demo::tests::paths_live_under_the_demo_directory ... ok
 test engine::hwaccel::tests::codes_round_trip ... ok
 test engine::hwaccel::tests::linux_prefers_vaapi_then_vulkan_then_vdpau ... ok
 test engine::hwaccel::tests::only_software_is_not_hardware ... ok
 test engine::hwaccel::tests::software_only_never_opens_a_device ... ok
+test engine::hwaccel::tests::badges_match_the_spec ... ok
 test engine::demo::tests::a_zero_length_file_is_not_a_clip ... ok
 ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
@@ -52,25 +52,7 @@ ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer
 ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
 ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
 ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
-ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
-ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] test engine::runtime::tests::offsets_move_the_union_bounds ... error evaluating nameok
-
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
-ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
-ALSA lib confmisc.c:422:(snd_func_concat) [error.core] test engine::runtime::tests::runtime_starts_paused_and_empty ... error evaluating stringsok
-
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
-ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
-ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
-test engine::runtime::tests::seeking_clamps_into_the_union ... ALSA lib conf.c:5211:(_snd_config_evaluate) ok[error.core] 
+test engine::runtime::tests::offsets_move_the_union_bounds ... ALSA lib conf.c:5211:(_snd_config_evaluate) ok[error.core] 
 function snd_func_card_inum returned error: No such file or directory
 ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
@@ -78,8 +60,26 @@ ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
 ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
 ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
-test engine::runtime::tests::stepping_moves_the_clock_by_whole_frames ... okALSA lib confmisc.c:855:(parse_card) 
-[error.core] cannot find card '0'
+ALSA lib confmisc.c:855:(parse_card) test engine::runtime::tests::runtime_starts_paused_and_empty ... [error.core] okcannot find card '0'
+
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
+ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) [error.core] test engine::runtime::tests::seeking_clamps_into_the_union ... error evaluating stringsok
+
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
+test engine::runtime::tests::stepping_moves_the_clock_by_whole_frames ... ALSA lib confmisc.c:855:(parse_card) ok[error.core] 
+cannot find card '0'
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
 ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
@@ -88,9 +88,9 @@ ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer
 ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
 ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
 test engine::sync_clock::tests::audio_frames_advance_the_clock_exactly ... ok
-test engine::runtime::tests::tick_reports_the_union_and_does_not_play_past_the_end ... ALSA lib confmisc.c:855:(parse_card) ok[error.core] 
-cannot find card '0'
-ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
+ALSA lib conf.c:5211:(_snd_config_evaluate) test engine::runtime::tests::tick_reports_the_union_and_does_not_play_past_the_end ... [error.core] okfunction snd_func_card_inum returned error: No such file or directory
+
 ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
 ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
 ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
@@ -118,8 +118,8 @@ test engine::video_frame::tests::pool_reuses_allocations ... ok
 test engine::video_frame::tests::strides_are_not_repacked ... ok
 test gpu::capture::tests::copy_path_reports_its_size_without_a_clipboard ... ok
 test gpu::capture::tests::scaling_never_enlarges ... ok
-test gpu::capture::tests::scaling_keeps_the_aspect_and_the_longest_edge ... ok
 test gpu::renderer::tests::compare_mode_flags ... ok
+test gpu::capture::tests::scaling_keeps_the_aspect_and_the_longest_edge ... ok
 test gpu::renderer::tests::rect_math_intersects ... ok
 test gpu::renderer::tests::uniform_encodes_mode_and_format ... ok
 test gpu::renderer::tests::uniform_matches_shader_layout ... ok
@@ -129,10 +129,10 @@ test model::geom::tests::clamping_keeps_layer_on_canvas ... ok
 test model::geom::tests::crop_is_bounded ... ok
 test model::geom::tests::crop_uv_and_pixels ... ok
 test model::geom::tests::hit_handle_misses_outside_tolerance ... ok
-test gpu::renderer::tests::shader_parses_and_validates ... ok
 test model::geom::tests::hit_testing_the_eight_handles ... ok
 test model::geom::tests::no_snap_when_far_away ... ok
 test model::geom::tests::normalized_round_trip ... ok
+test gpu::renderer::tests::shader_parses_and_validates ... ok
 test model::geom::tests::resize_never_goes_below_minimum ... ok
 test model::geom::tests::resizing_from_corners_keeps_the_opposite_corner ... ok
 test model::geom::tests::snapping_to_canvas_edges_and_centre ... ok
@@ -164,14 +164,15 @@ test model::store::tests::clear_all_removes_data_but_keeps_the_root ... ok
 test model::store::tests::export_and_import_round_trip ... ok
 test model::store::tests::missing_preferences_are_defaults_not_errors ... ok
 test model::store::tests::importing_a_file_without_an_id_mints_one ... ok
-test model::store::tests::newer_files_are_refused_with_a_clear_error ... ok
+test engine::sync_clock::tests::switching_timebase_does_not_jump ... ok
 test model::store::tests::session_round_trip_keeps_every_field ... ok
 test model::store::tests::session_survives_a_layout_round_trip ... ok
+test model::store::tests::session_list_is_sorted_newest_first ... ok
 test model::store::tests::settings_round_trip_through_disk ... ok
-test model::store::tests::thumbnails_are_written_as_png ... ok
 test model::timeline::tests::alignment_delta_uses_the_target_convention ... ok
 test model::timeline::tests::drift_thresholds_are_exact ... ok
 test model::timeline::tests::nudge_rate_points_the_right_way_and_clamps ... ok
+test model::store::tests::thumbnails_are_written_as_png ... ok
 test model::timeline::tests::scrubber_fraction_is_relative_to_union_start ... ok
 test model::timeline::tests::span_holds_first_and_last_frames ... ok
 test model::timeline::tests::stepping_stays_inside_the_footage ... ok
@@ -180,13 +181,12 @@ test model::timeline::tests::union_covers_every_layer ... ok
 test model::timeline::tests::union_of_nothing_is_empty ... ok
 test ui::screens::player::tests::aspect_helper_snaps_to_the_target_ratio ... ok
 test ui::screens::player::tests::aspect_locked_resize_keeps_the_ratio ... ok
-test engine::sync_clock::tests::switching_timebase_does_not_jump ... ok
 test ui::screens::player::tests::contain_letterboxes_a_wide_source_into_a_square_box ... ok
 test ui::screens::player::tests::contain_pillarboxes_a_tall_source ... ok
-test ui::screens::player::tests::cover_fills_the_box_and_crops_the_long_axis ... ok
 test ui::screens::player::tests::cover_respects_an_existing_crop ... ok
 test ui::screens::player::tests::layer_keys_are_stable_and_distinct ... ok
 test ui::screens::player::tests::normalized_points_round_trip ... ok
+test ui::screens::player::tests::cover_fills_the_box_and_crops_the_long_axis ... ok
 test ui::screens::player::tests::reordering_densifies_z ... ok
 test ui::screens::sessions::tests::relative_times_read_naturally ... ok
 test ui::shortcuts::tests::command_and_alt_are_left_to_egui ... ok
@@ -204,7 +204,7 @@ test ui::widgets::tests::file_names_fall_back_to_the_whole_path ... ok
 test ui::widgets::tests::offsets_are_signed ... ok
 test ui::widgets::tests::row_colours_follow_state ... ok
 test ui::widgets::tests::timecode_formats_milli_seconds ... ok
-test model::store::tests::session_list_is_sorted_newest_first ... ok
+test model::store::tests::newer_files_are_refused_with_a_clear_error ... ok
 test engine::runtime::tests::missing_media_shows_up_as_an_error_not_a_panic ... ok
 
 test result: ok. 139 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
@@ -222,7 +222,7 @@ test exit: 0
 
 ===== cargo clippy --all-targets -- -D warnings =====
     Checking reaction-player v0.1.0 (/__w/ReactPlayer-Rust/ReactPlayer-Rust)
-    Finished `dev` profile [optimized + debuginfo] target(s) in 1.65s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1.36s
 clippy exit: 0
 
 ===== clippy warning count =====
