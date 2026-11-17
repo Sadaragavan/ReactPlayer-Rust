@@ -1327,6 +1327,22 @@ fn layers_panel(app: &mut App, ui: &mut egui::Ui) {
                 ui.add_space(4.0);
             }
 
+            // Dropping a file on the window is the quick way, but it is not a
+            // discoverable one: the panel offers the same thing as a button.
+            if ui
+                .add_sized(
+                    egui::vec2(ui.available_width(), 26.0),
+                    egui::Button::new(RichText::new("+ Add layer…").color(theme::TEXT).size(12.0))
+                        .fill(theme::BG)
+                        .stroke(theme::hairline(theme::LINE_STRONG))
+                        .corner_radius(theme::RADIUS),
+                )
+                .on_hover_text("Add another video to this session")
+                .clicked()
+            {
+                app.add_layers_dialog();
+            }
+
             ui.add_space(8.0);
             widgets::hairline(ui);
             ui.add_space(8.0);

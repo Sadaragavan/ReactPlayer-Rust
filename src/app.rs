@@ -513,6 +513,23 @@ impl App {
         self.toasts.success(format!("Added {added} {noun}."));
     }
 
+    /// Ask for video files and add them to the open session as reactions.
+    pub fn add_layers_dialog(&mut self) {
+        if self.session.is_none() {
+            return;
+        }
+        let Some(files) = rfd::FileDialog::new()
+            .add_filter("Video", VIDEO_EXTENSIONS)
+            .pick_files()
+        else {
+            return;
+        };
+        if files.is_empty() {
+            return;
+        }
+        self.add_layers(files, None);
+    }
+
     /// Open the demo: generate the clips if needed, then the session.
     pub fn open_demo(&mut self, ctx: &egui::Context) {
         let dir = self.store.data_dir().to_path_buf();
