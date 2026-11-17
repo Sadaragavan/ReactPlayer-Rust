@@ -359,6 +359,8 @@ impl App {
         self.save_settings();
         self.theater = false;
         self.layers_panel = true;
+        // Undo history belongs to the session that was open, not this one.
+        self.undo.clear();
         // Nothing to autosave yet: the file on disk is what was just loaded.
         self.saved_json = self.session_json();
         self.changed_at = None;
@@ -367,6 +369,7 @@ impl App {
 
     pub fn close_session(&mut self) {
         self.save_current();
+        self.undo.clear();
         if let (Some(runtime), Some(session)) = (self.runtime.as_mut(), self.session.as_ref()) {
             runtime.stop(session);
         }
@@ -401,6 +404,9 @@ impl App {
             .map(|index| session.layers[*index].id.clone());
         self.session = Some(session);
         self.sync_engine();
+        if let (Some(runtime), Some(session)) = (self.runtime.as_mut(), self.session.as_ref()) {
+            runtime.apply_offsets(session);
+        }
         self.toasts.info(format!("Undid {label}."));
     }
 
